@@ -111,7 +111,7 @@ jobs:
           cargo test
           cd arrow
           # re-run tests on arrow workspace with additional features
-          cargo test --features=prettyprint
+          cargo test --features=prettyprint --features=force_validate
           # run test on arrow with minimal set of features
           cargo test --no-default-features
           cargo run --example builders

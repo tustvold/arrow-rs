@@ -284,6 +284,9 @@ impl ArrayData {
     /// Note: This is a low level API and most users of the arrow
     /// crate should create arrays using the methods in the `array`
     /// module.
+    ///
+    /// Note: if the `validate_full` feature flag is enabled this will perform
+    /// validation at runtime and panic if any invariants are violated
     pub unsafe fn new_unchecked(
         data_type: DataType,
         len: usize,
@@ -298,7 +301,7 @@ impl ArrayData {
             Some(null_count) => null_count,
         };
         let null_bitmap = null_bit_buffer.map(Bitmap::from);
-        Self {
+        let data = Self {
             data_type,
             len,
             null_count,
@@ -306,7 +309,13 @@ impl ArrayData {
             buffers,
             child_data,
             null_bitmap,
+        };
+
+        if cfg!(feature = "force_validate") {
+            data.validate_full()
+                .expect("validate_full found invalid data")
         }
+        data
     }
 
     /// Create a new ArrayData, validating that the provided buffers
@@ -2483,6 +2492,15 @@ mod tests {
             vec![field1.data().clone(), field2.data().clone()],
         )
         .unwrap();
+    }
+
+    #[cfg(feature = "force_validate")]
+    #[test]
+    #[should_panic(expected = "Expected 1 buffers in array of type Int32, got 0")]
+    fn test_force_validate() {
+        unsafe {
+            ArrayData::new_unchecked(DataType::Int32, 10, None, None, 0, vec![], vec![]);
+        }
     }
 
     #[test]

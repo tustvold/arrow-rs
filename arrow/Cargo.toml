@@ -71,6 +71,8 @@ prettyprint = ["comfy-table"]
 # target without assuming an environment containing JavaScript.
 test_utils = ["rand"]
 pyarrow = ["pyo3"]
+# Force validation of data structures
+force_validate = []
 
 [dev-dependencies]
 rand = "0.8"
