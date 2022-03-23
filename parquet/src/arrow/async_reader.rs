@@ -84,6 +84,7 @@ use std::task::{Context, Poll};
 use byteorder::{ByteOrder, LittleEndian};
 use futures::future::{BoxFuture, FutureExt};
 use futures::stream::Stream;
+use parquet_format::PageType;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
 
 use arrow::datatypes::SchemaRef;
@@ -93,11 +94,12 @@ use crate::arrow::array_reader::{build_array_reader, RowGroupCollection};
 use crate::arrow::arrow_reader::ParquetRecordBatchReader;
 use crate::arrow::schema::parquet_to_arrow_schema;
 use crate::basic::Compression;
-use crate::column::page::{PageIterator, PageReader};
+use crate::column::page::{Page, PageIterator, PageReader};
+use crate::compression::{create_codec, Codec};
 use crate::errors::{ParquetError, Result};
 use crate::file::footer::parse_metadata_buffer;
 use crate::file::metadata::ParquetMetaData;
-use crate::file::reader::SerializedPageReader;
+use crate::file::serialized_reader::{decode_page, read_page_header};
 use crate::file::PARQUET_MAGIC;
 use crate::schema::types::{ColumnDescPtr, SchemaDescPtr};
 use crate::util::memory::ByteBufferPtr;
@@ -330,8 +332,13 @@ impl<T: AsyncRead + AsyncSeek + Unpin + Send + 'static> Stream
 
                                 input.seek(SeekFrom::Start(start)).await?;
 
-                                let mut buffer = vec![0_u8; (end - start) as usize];
-                                input.read_exact(buffer.as_mut_slice()).await?;
+                                let len = (end - start) as usize;
+                                let mut read = 0;
+                                let mut buffer = Vec::with_capacity(len);
+                                while read < len {
+                                    read += input.read_buf(&mut buffer).await?;
+                                }
+                                buffer.truncate(len);
 
                                 column_chunks[*column_idx] = Some(InMemoryColumnChunk {
                                     num_values: column.num_values(),
@@ -416,6 +423,7 @@ async fn read_footer<T: AsyncRead + AsyncSeek + Unpin>(
     parse_metadata_buffer(&mut Cursor::new(buf))
 }
 
+/// An in-memory collection of column chunks
 struct InMemoryRowGroup {
     schema: SchemaDescPtr,
     column_chunks: Vec<Option<InMemoryColumnChunk>>,
@@ -427,16 +435,18 @@ impl RowGroupCollection for InMemoryRowGroup {
     }
 
     fn column_chunks(&self, i: usize) -> Result<Box<dyn PageIterator>> {
-        let page_reader = self.column_chunks[i].as_ref().unwrap().pages();
+        let chunk = self.column_chunks[i].clone().unwrap();
+        let page_reader = InMemoryColumnChunkReader::new(chunk)?;
 
         Ok(Box::new(ColumnChunkIterator {
             schema: self.schema.clone(),
             column_schema: self.schema.columns()[i].clone(),
-            reader: Some(page_reader),
+            reader: Some(Ok(Box::new(page_reader))),
         }))
     }
 }
 
+/// Data for a single column chunk
 #[derive(Clone)]
 struct InMemoryColumnChunk {
     num_values: i64,
@@ -445,19 +455,79 @@ struct InMemoryColumnChunk {
     data: ByteBufferPtr,
 }
 
-impl InMemoryColumnChunk {
-    fn pages(&self) -> Result<Box<dyn PageReader>> {
-        let page_reader = SerializedPageReader::new(
-            Cursor::new(self.data.clone()),
-            self.num_values,
-            self.compression,
-            self.physical_type,
-        )?;
+/// A serialized implementation for Parquet [`PageReader`].
+struct InMemoryColumnChunkReader {
+    chunk: InMemoryColumnChunk,
+    decompressor: Option<Box<dyn Codec>>,
+    offset: usize,
+    seen_num_values: i64,
+}
 
-        Ok(Box::new(page_reader))
+impl InMemoryColumnChunkReader {
+    /// Creates a new serialized page reader from file source.
+    pub fn new(chunk: InMemoryColumnChunk) -> Result<Self> {
+        let decompressor = create_codec(chunk.compression)?;
+        let result = Self {
+            chunk,
+            decompressor,
+            offset: 0,
+            seen_num_values: 0,
+        };
+        Ok(result)
     }
 }
 
+impl Iterator for InMemoryColumnChunkReader {
+    type Item = Result<Page>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.get_next_page().transpose()
+    }
+}
+
+impl PageReader for InMemoryColumnChunkReader {
+    fn get_next_page(&mut self) -> Result<Option<Page>> {
+        while self.seen_num_values < self.chunk.num_values {
+            let mut cursor = Cursor::new(&self.chunk.data.as_ref()[self.offset..]);
+            let page_header = read_page_header(&mut cursor)?;
+            self.offset += std::io::Seek::stream_position(&mut cursor).unwrap() as usize;
+
+            let compressed_size = page_header.compressed_page_size as usize;
+            let buffer = self.chunk.data.range(self.offset, compressed_size);
+            self.offset += compressed_size;
+
+            let result = match page_header.type_ {
+                PageType::DataPage | PageType::DataPageV2 => {
+                    let decoded = decode_page(
+                        page_header,
+                        buffer,
+                        self.chunk.physical_type,
+                        self.decompressor.as_mut(),
+                    )?;
+                    self.seen_num_values += decoded.num_values() as i64;
+                    decoded
+                }
+                PageType::DictionaryPage => decode_page(
+                    page_header,
+                    buffer,
+                    self.chunk.physical_type,
+                    self.decompressor.as_mut(),
+                )?,
+                _ => {
+                    // For unknown page type (e.g., INDEX_PAGE), skip and read next.
+                    continue;
+                }
+            };
+
+            return Ok(Some(result));
+        }
+
+        // We are at the end of this column chunk and no more page left. Return None.
+        Ok(None)
+    }
+}
+
+/// Implements [`PageIterator`] for a single column chunk, yielding a single [`PageReader`]
 struct ColumnChunkIterator {
     schema: SchemaDescPtr,
     column_schema: ColumnDescPtr,
