@@ -47,6 +47,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field};
 use std::ops::Range;
+use arrow::util::bit_iterator::BitIndexIterator;
 
 /// Performs a depth-first scan of the children of `array`, constructing [`LevelInfo`]
 /// for each leaf column encountered
@@ -379,19 +380,19 @@ impl LevelInfoBuilder {
                 def_levels.reserve(len);
                 info.non_null_indices.reserve(len);
 
+                let initial_len = def_levels.len();
+
                 match array.data().null_bitmap() {
                     Some(nulls) => {
                         let nulls_offset = array.data().offset();
-                        // TODO: Faster bitmask iteration (#1757)
-                        for i in range {
-                            match nulls.is_set(i + nulls_offset) {
-                                true => {
-                                    def_levels.push(info.max_def_level);
-                                    info.non_null_indices.push(i)
-                                }
-                                false => def_levels.push(info.max_def_level - 1),
-                            }
+                        let iter = BitIndexIterator::new(nulls.buffer_ref().as_slice(), range.start + nulls_offset, len);
+
+                        for i in iter {
+                            def_levels.resize(initial_len + i, info.max_def_level - 1);
+                            def_levels.push(info.max_def_level);
+                            info.non_null_indices.push(i + range.start);
                         }
+                        def_levels.resize(initial_len + len, info.max_def_level - 1);
                     }
                     None => {
                         let iter = std::iter::repeat(info.max_def_level).take(len);
