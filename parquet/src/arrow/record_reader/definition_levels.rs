@@ -206,7 +206,6 @@ impl ColumnLevelDecoder for DefinitionLevelBufferDecoder {
                 assert_eq!(self.max_level, 1);
                 assert_eq!(range.start + writer.len, nulls.len());
 
-                let decoder = self.decoder.packed();
                 decoder.read(nulls, range.end - range.start)
             }
             _ => unreachable!("inconsistent null mask"),
