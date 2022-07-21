@@ -27,7 +27,6 @@ use crate::errors::{ParquetError, Result};
 use crate::schema::types::ColumnDescPtr;
 use crate::util::{
     bit_util::{self, num_required_bits, BitWriter},
-    hash_util,
     memory::ByteBufferPtr,
 };
 
@@ -172,6 +171,9 @@ const HASH_SLOT_EMPTY: i32 = -1;
 /// (max bit width = 32), followed by the values encoded using RLE/Bit packed described
 /// above (with the given bit width).
 pub struct DictEncoder<T: DataType> {
+    /// Random hash state
+    state: ahash::RandomState,
+
     // Descriptor for the column to be encoded.
     desc: ColumnDescPtr,
 
@@ -180,7 +182,7 @@ pub struct DictEncoder<T: DataType> {
 
     // Store `hash_table_size` - 1, so that `j & mod_bitmask` is equivalent to
     // `j % hash_table_size`, but uses far fewer CPU cycles.
-    mod_bitmask: u32,
+    mod_bitmask: u64,
 
     // Stores indices which map (many-to-one) to the values in the `uniques` array.
     // Here we are using fix-sized array with linear probing.
@@ -203,9 +205,10 @@ impl<T: DataType> DictEncoder<T> {
         let mut slots = vec![];
         slots.resize(INITIAL_HASH_TABLE_SIZE, -1);
         Self {
+            state: Default::default(),
             desc,
             hash_table_size: INITIAL_HASH_TABLE_SIZE,
-            mod_bitmask: (INITIAL_HASH_TABLE_SIZE - 1) as u32,
+            mod_bitmask: (INITIAL_HASH_TABLE_SIZE - 1) as u64,
             hash_slots: slots,
             buffered_indices: vec![],
             uniques: vec![],
@@ -259,10 +262,18 @@ impl<T: DataType> DictEncoder<T> {
         Ok(ByteBufferPtr::new(encoder.consume()?))
     }
 
+    fn compute_hash(&self, value: &T::T) -> u64 {
+        use std::hash::{BuildHasher, Hash, Hasher};
+
+        let mut hasher = self.state.build_hasher();
+        value.as_bytes().hash(&mut hasher);
+        hasher.finish()
+    }
+
     #[inline]
     #[allow(clippy::unnecessary_wraps)]
     fn put_one(&mut self, value: &T::T) -> Result<()> {
-        let mut j = (hash_util::hash(value, 0) & self.mod_bitmask) as usize;
+        let mut j = (self.compute_hash(value) & self.mod_bitmask) as usize;
         let mut index = self.hash_slots[j];
 
         while index != HASH_SLOT_EMPTY && self.uniques[index as usize] != *value {
@@ -324,7 +335,7 @@ impl<T: DataType> DictEncoder<T> {
                 continue;
             }
             let value = &self.uniques[index as usize];
-            let mut j = (hash_util::hash(value, 0) & ((new_size - 1) as u32)) as usize;
+            let mut j = (self.compute_hash(value) & ((new_size - 1) as u64)) as usize;
             let mut slot = new_hash_slots[j];
             while slot != HASH_SLOT_EMPTY && self.uniques[slot as usize] != *value {
                 j += 1;
@@ -338,7 +349,7 @@ impl<T: DataType> DictEncoder<T> {
         }
 
         self.hash_table_size = new_size;
-        self.mod_bitmask = (new_size - 1) as u32;
+        self.mod_bitmask = (new_size - 1) as u64;
         self.hash_slots = new_hash_slots;
     }
 }

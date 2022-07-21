@@ -30,6 +30,7 @@ edition = "2021"
 rust-version = "1.57"
 
 [dependencies]
+ahash = "0.7"
 parquet-format = { version = "4.0.0", default-features = false }
 bytes = { version = "1.1", default-features = false, features = ["std"] }
 byteorder = { version = "1", default-features = false }
