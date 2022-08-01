@@ -51,17 +51,17 @@ pub fn encode_byte_array(encoding: Encoding, data: &[ByteArray]) -> ByteBufferPt
     let descriptor = utf8_column();
     let mut encoder = get_encoder::<ByteArrayType>(descriptor, encoding).unwrap();
 
-    encoder.put(data).unwrap();
-    encoder.flush_buffer().unwrap()
+    encoder.put(data);
+    encoder.flush_buffer()
 }
 
 /// Returns the encoded dictionary and value data
 pub fn encode_dictionary(data: &[ByteArray]) -> (ByteBufferPtr, ByteBufferPtr) {
     let mut dict_encoder = DictEncoder::<ByteArrayType>::new(utf8_column());
 
-    dict_encoder.put(data).unwrap();
-    let encoded_rle = dict_encoder.flush_buffer().unwrap();
-    let encoded_dictionary = dict_encoder.write_dict().unwrap();
+    dict_encoder.put(data);
+    let encoded_rle = dict_encoder.flush_buffer();
+    let encoded_dictionary = dict_encoder.write_dict();
 
     (encoded_dictionary, encoded_rle)
 }

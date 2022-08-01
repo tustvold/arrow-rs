@@ -23,7 +23,7 @@ use crate::column::writer::{
 use crate::data_type::private::ParquetValueType;
 use crate::data_type::DataType;
 use crate::encodings::encoding::{get_encoder, DictEncoder, Encoder};
-use crate::errors::{ParquetError, Result};
+use crate::errors::Result;
 use crate::file::properties::{EnabledStatistics, WriterProperties};
 use crate::schema::types::{ColumnDescPtr, ColumnDescriptor};
 use crate::util::memory::ByteBufferPtr;
@@ -89,10 +89,10 @@ pub trait ColumnValueEncoder {
         Self: Sized;
 
     /// Write the corresponding values to this [`ColumnValueEncoder`]
-    fn write(&mut self, values: &Self::Values, offset: usize, len: usize) -> Result<()>;
+    fn write(&mut self, values: &Self::Values, offset: usize, len: usize);
 
     /// Write the values at the indexes in `indices` to this [`ColumnValueEncoder`]
-    fn write_gather(&mut self, values: &Self::Values, indices: &[usize]) -> Result<()>;
+    fn write_gather(&mut self, values: &Self::Values, indices: &[usize]);
 
     /// Returns the number of buffered values
     fn num_values(&self) -> usize;
@@ -111,10 +111,10 @@ pub trait ColumnValueEncoder {
     ///
     /// Note: [`Self::flush_data_page`] must be called first, as this will error if there
     /// are any pending page values
-    fn flush_dict_page(&mut self) -> Result<Option<DictionaryPage>>;
+    fn flush_dict_page(&mut self) -> Option<DictionaryPage>;
 
     /// Flush the next data page for this column chunk
-    fn flush_data_page(&mut self) -> Result<DataPageValues<Self::T>>;
+    fn flush_data_page(&mut self) -> DataPageValues<Self::T>;
 }
 
 pub struct ColumnValueEncoderImpl<T: DataType> {
@@ -128,7 +128,7 @@ pub struct ColumnValueEncoderImpl<T: DataType> {
 }
 
 impl<T: DataType> ColumnValueEncoderImpl<T> {
-    fn write_slice(&mut self, slice: &[T::T]) -> Result<()> {
+    fn write_slice(&mut self, slice: &[T::T]) {
         if self.statistics_enabled == EnabledStatistics::Page {
             if let Some((min, max)) = self.min_max(slice, None) {
                 update_min(&self.descr, &min, &mut self.min_value);
@@ -187,21 +187,12 @@ impl<T: DataType> ColumnValueEncoder for ColumnValueEncoderImpl<T> {
         })
     }
 
-    fn write(&mut self, values: &[T::T], offset: usize, len: usize) -> Result<()> {
+    fn write(&mut self, values: &[T::T], offset: usize, len: usize) {
         self.num_values += len;
-
-        let slice = values.get(offset..offset + len).ok_or_else(|| {
-            general_err!(
-                "Expected to write {} values, but have only {}",
-                len,
-                values.len() - offset
-            )
-        })?;
-
-        self.write_slice(slice)
+        self.write_slice(&values[offset..offset + len])
     }
 
-    fn write_gather(&mut self, values: &Self::Values, indices: &[usize]) -> Result<()> {
+    fn write_gather(&mut self, values: &Self::Values, indices: &[usize]) {
         let slice: Vec<_> = indices.iter().map(|idx| values[*idx].clone()).collect();
         self.write_slice(&slice)
     }
@@ -225,40 +216,39 @@ impl<T: DataType> ColumnValueEncoder for ColumnValueEncoderImpl<T> {
         }
     }
 
-    fn flush_dict_page(&mut self) -> Result<Option<DictionaryPage>> {
+    fn flush_dict_page(&mut self) -> Option<DictionaryPage> {
         match self.dict_encoder.take() {
             Some(encoder) => {
-                if self.num_values != 0 {
-                    return Err(general_err!(
-                        "Must flush data pages before flushing dictionary"
-                    ));
-                }
+                assert_eq!(
+                    self.num_values, 0,
+                    "Must flush data pages before flushing dictionary"
+                );
 
-                let buf = encoder.write_dict()?;
+                let buf = encoder.write_dict();
 
-                Ok(Some(DictionaryPage {
+                Some(DictionaryPage {
                     buf,
                     num_values: encoder.num_entries(),
                     is_sorted: encoder.is_sorted(),
-                }))
+                })
             }
-            _ => Ok(None),
+            _ => None,
         }
     }
 
-    fn flush_data_page(&mut self) -> Result<DataPageValues<T::T>> {
+    fn flush_data_page(&mut self) -> DataPageValues<T::T> {
         let (buf, encoding) = match &mut self.dict_encoder {
-            Some(encoder) => (encoder.write_indices()?, Encoding::RLE_DICTIONARY),
-            _ => (self.encoder.flush_buffer()?, self.encoder.encoding()),
+            Some(encoder) => (encoder.write_indices(), Encoding::RLE_DICTIONARY),
+            _ => (self.encoder.flush_buffer(), self.encoder.encoding()),
         };
 
-        Ok(DataPageValues {
+        DataPageValues {
             buf,
             encoding,
             num_values: std::mem::take(&mut self.num_values),
             min_value: self.min_value.take(),
             max_value: self.max_value.take(),
-        })
+        }
     }
 }
 

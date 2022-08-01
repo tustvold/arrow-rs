@@ -598,11 +598,7 @@ pub(crate) mod private {
         const PHYSICAL_TYPE: Type;
 
         /// Encode the value directly from a higher level encoder
-        fn encode<W: std::io::Write>(
-            values: &[Self],
-            writer: &mut W,
-            bit_writer: &mut BitWriter,
-        ) -> Result<()>;
+        fn encode(values: &[Self], writer: &mut Vec<u8>, bit_writer: &mut BitWriter);
 
         /// Establish the data that will be decoded in a buffer
         fn set_data(
@@ -653,15 +649,10 @@ pub(crate) mod private {
         const PHYSICAL_TYPE: Type = Type::BOOLEAN;
 
         #[inline]
-        fn encode<W: std::io::Write>(
-            values: &[Self],
-            _: &mut W,
-            bit_writer: &mut BitWriter,
-        ) -> Result<()> {
+        fn encode(values: &[Self], _: &mut Vec<u8>, bit_writer: &mut BitWriter) {
             for value in values {
                 bit_writer.put_value(*value as u64, 1)
             }
-            Ok(())
         }
 
         #[inline]
@@ -729,16 +720,14 @@ pub(crate) mod private {
                 const PHYSICAL_TYPE: Type = $physical_ty;
 
                 #[inline]
-                fn encode<W: std::io::Write>(values: &[Self], writer: &mut W, _: &mut BitWriter) -> Result<()> {
+                fn encode(values: &[Self], writer: &mut Vec<u8>, _: &mut BitWriter) {
                     let raw = unsafe {
                         std::slice::from_raw_parts(
                             values.as_ptr() as *const u8,
                             std::mem::size_of::<$ty>() * values.len(),
                         )
                     };
-                    writer.write_all(raw)?;
-
-                    Ok(())
+                    writer.extend_from_slice(raw);
                 }
 
                 #[inline]
@@ -814,11 +803,7 @@ pub(crate) mod private {
         const PHYSICAL_TYPE: Type = Type::INT96;
 
         #[inline]
-        fn encode<W: std::io::Write>(
-            values: &[Self],
-            writer: &mut W,
-            _: &mut BitWriter,
-        ) -> Result<()> {
+        fn encode(values: &[Self], writer: &mut Vec<u8>, _: &mut BitWriter) {
             for value in values {
                 let raw = unsafe {
                     std::slice::from_raw_parts(
@@ -826,9 +811,8 @@ pub(crate) mod private {
                         12,
                     )
                 };
-                writer.write_all(raw)?;
+                writer.extend_from_slice(raw)
             }
-            Ok(())
         }
 
         #[inline]
@@ -926,18 +910,12 @@ pub(crate) mod private {
         const PHYSICAL_TYPE: Type = Type::BYTE_ARRAY;
 
         #[inline]
-        fn encode<W: std::io::Write>(
-            values: &[Self],
-            writer: &mut W,
-            _: &mut BitWriter,
-        ) -> Result<()> {
+        fn encode(values: &[Self], writer: &mut Vec<u8>, _: &mut BitWriter) {
             for value in values {
                 let len: u32 = value.len().try_into().unwrap();
-                writer.write_all(&len.to_ne_bytes())?;
-                let raw = value.data();
-                writer.write_all(raw)?;
+                writer.extend_from_slice(&len.to_le_bytes());
+                writer.extend_from_slice(value.data())
             }
-            Ok(())
         }
 
         #[inline]
@@ -1019,16 +997,10 @@ pub(crate) mod private {
         const PHYSICAL_TYPE: Type = Type::FIXED_LEN_BYTE_ARRAY;
 
         #[inline]
-        fn encode<W: std::io::Write>(
-            values: &[Self],
-            writer: &mut W,
-            _: &mut BitWriter,
-        ) -> Result<()> {
+        fn encode(values: &[Self], writer: &mut Vec<u8>, _: &mut BitWriter) {
             for value in values {
-                let raw = value.data();
-                writer.write_all(raw)?;
+                writer.extend_from_slice(value.data())
             }
-            Ok(())
         }
 
         #[inline]

@@ -23,7 +23,6 @@ use crate::data_type::private::ParquetValueType;
 use crate::data_type::DataType;
 use crate::encodings::encoding::{Encoder, PlainEncoder};
 use crate::encodings::rle::RleEncoder;
-use crate::errors::{ParquetError, Result};
 use crate::schema::types::ColumnDescPtr;
 use crate::util::bit_util::num_required_bits;
 use crate::util::interner::{Interner, Storage};
@@ -116,15 +115,15 @@ impl<T: DataType> DictEncoder<T> {
 
     /// Writes out the dictionary values with PLAIN encoding in a byte buffer, and return
     /// the result.
-    pub fn write_dict(&self) -> Result<ByteBufferPtr> {
+    pub fn write_dict(&self) -> ByteBufferPtr {
         let mut plain_encoder = PlainEncoder::<T>::new(self.desc.clone(), vec![]);
-        plain_encoder.put(&self.interner.storage().uniques)?;
+        plain_encoder.put(&self.interner.storage().uniques);
         plain_encoder.flush_buffer()
     }
 
     /// Writes out the dictionary values with RLE encoding in a byte buffer, and return
     /// the result.
-    pub fn write_indices(&mut self) -> Result<ByteBufferPtr> {
+    pub fn write_indices(&mut self) -> ByteBufferPtr {
         let buffer_len = self.estimated_data_encoded_size();
         let mut buffer = Vec::with_capacity(buffer_len);
         buffer.push(self.bit_width() as u8);
@@ -132,12 +131,10 @@ impl<T: DataType> DictEncoder<T> {
         // Write bit width in the first byte
         let mut encoder = RleEncoder::new_from_buf(self.bit_width(), buffer);
         for index in &self.indices {
-            if !encoder.put(*index as u64)? {
-                return Err(general_err!("Encoder doesn't have enough space"));
-            }
+            encoder.put(*index as u64)
         }
         self.indices.clear();
-        Ok(ByteBufferPtr::new(encoder.consume()?))
+        ByteBufferPtr::new(encoder.consume())
     }
 
     fn put_one(&mut self, value: &T::T) {
@@ -151,12 +148,11 @@ impl<T: DataType> DictEncoder<T> {
 }
 
 impl<T: DataType> Encoder<T> for DictEncoder<T> {
-    fn put(&mut self, values: &[T::T]) -> Result<()> {
+    fn put(&mut self, values: &[T::T]) {
         self.indices.reserve(values.len());
         for i in values {
             self.put_one(i)
         }
-        Ok(())
     }
 
     // Performance Note:
@@ -172,7 +168,7 @@ impl<T: DataType> Encoder<T> for DictEncoder<T> {
             + RleEncoder::max_buffer_size(bit_width, self.indices.len())
     }
 
-    fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
+    fn flush_buffer(&mut self) -> ByteBufferPtr {
         self.write_indices()
     }
 }

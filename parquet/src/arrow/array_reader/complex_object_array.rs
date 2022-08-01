@@ -168,8 +168,11 @@ where
             Some(reader) => reader.skip_records(num_records),
             None => {
                 if self.next_column_reader()? {
-                    self.column_reader.as_mut().unwrap().skip_records(num_records)
-                }else {
+                    self.column_reader
+                        .as_mut()
+                        .unwrap()
+                        .skip_records(num_records)
+                } else {
                     Ok(0)
                 }
             }
@@ -457,17 +460,13 @@ mod tests {
             pb.add_rep_levels(max_rep_level, &rep_levels.as_slice()[range.clone()]);
             pb.add_def_levels(max_def_level, &def_levels.as_slice()[range]);
             let _ = dict_encoder.put(&values);
-            let indices = dict_encoder
-                .write_indices()
-                .expect("write_indices() should be OK");
+            let indices = dict_encoder.write_indices();
             pb.add_indices(indices);
             let data_page = pb.consume();
             // for each page log num_values vs actual values in page
             // println!("page num_values: {}, values.len(): {}", data_page.num_values(), values.len());
             // add dictionary page
-            let dict = dict_encoder
-                .write_dict()
-                .expect("write_dict() should be OK");
+            let dict = dict_encoder.write_dict();
             let dict_page = Page::DictionaryPage {
                 buf: dict,
                 num_values: dict_encoder.num_entries() as u32,

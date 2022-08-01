@@ -75,8 +75,8 @@ impl DataPageBuilderImpl {
             return 0;
         }
         let mut level_encoder = LevelEncoder::v1(Encoding::RLE, max_level, levels.len());
-        level_encoder.put(levels).expect("put() should be OK");
-        let encoded_levels = level_encoder.consume().expect("consume() should be OK");
+        level_encoder.put(levels);
+        let encoded_levels = level_encoder.consume();
         // Actual encoded bytes (without length offset)
         let encoded_bytes = &encoded_levels[mem::size_of::<i32>()..];
         if self.datapage_v2 {
@@ -113,10 +113,8 @@ impl DataPageBuilder for DataPageBuilderImpl {
         let mut encoder: Box<dyn Encoder<T>> =
             get_encoder::<T>(self.desc.clone(), encoding)
                 .expect("get_encoder() should be OK");
-        encoder.put(values).expect("put() should be OK");
-        let encoded_values = encoder
-            .flush_buffer()
-            .expect("consume_buffer() should be OK");
+        encoder.put(values);
+        let encoded_values = encoder.flush_buffer();
         self.buffer.extend_from_slice(encoded_values.data());
     }
 
@@ -285,9 +283,7 @@ pub fn make_pages<T: DataType>(
         match encoding {
             Encoding::PLAIN_DICTIONARY | Encoding::RLE_DICTIONARY => {
                 let _ = dict_encoder.put(&values[value_range.clone()]);
-                let indices = dict_encoder
-                    .write_indices()
-                    .expect("write_indices() should be OK");
+                let indices = dict_encoder.write_indices();
                 pb.add_indices(indices);
             }
             Encoding::PLAIN => {
@@ -302,9 +298,7 @@ pub fn make_pages<T: DataType>(
     }
 
     if encoding == Encoding::PLAIN_DICTIONARY || encoding == Encoding::RLE_DICTIONARY {
-        let dict = dict_encoder
-            .write_dict()
-            .expect("write_dict() should be OK");
+        let dict = dict_encoder.write_dict();
         let dict_page = Page::DictionaryPage {
             buf: dict,
             num_values: dict_encoder.num_entries() as u32,

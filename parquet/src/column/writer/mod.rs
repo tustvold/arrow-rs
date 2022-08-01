@@ -499,9 +499,9 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
         match value_indices {
             Some(indices) => {
                 let indices = &indices[values_offset..values_offset + values_to_write];
-                self.encoder.write_gather(values, indices)?;
+                self.encoder.write_gather(values, indices);
             }
-            None => self.encoder.write(values, values_offset, values_to_write)?,
+            None => self.encoder.write(values, values_offset, values_to_write),
         }
 
         self.num_buffered_values += num_levels as u32;
@@ -595,7 +595,7 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
     /// Data page is either buffered in case of dictionary encoding or written directly.
     fn add_data_page(&mut self) -> Result<()> {
         // Extract encoded values
-        let values_data = self.encoder.flush_data_page()?;
+        let values_data = self.encoder.flush_data_page();
 
         let max_def_level = self.descr.max_def_level();
         let max_rep_level = self.descr.max_rep_level();
@@ -630,7 +630,7 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
                             Encoding::RLE,
                             &self.rep_levels_sink[..],
                             max_rep_level,
-                        )?[..],
+                        )[..],
                     );
                 }
 
@@ -640,7 +640,7 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
                             Encoding::RLE,
                             &self.def_levels_sink[..],
                             max_def_level,
-                        )?[..],
+                        )[..],
                     );
                 }
 
@@ -671,14 +671,14 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
 
                 if max_rep_level > 0 {
                     let levels =
-                        self.encode_levels_v2(&self.rep_levels_sink[..], max_rep_level)?;
+                        self.encode_levels_v2(&self.rep_levels_sink[..], max_rep_level);
                     rep_levels_byte_len = levels.len();
                     buffer.extend_from_slice(&levels[..]);
                 }
 
                 if max_def_level > 0 {
                     let levels =
-                        self.encode_levels_v2(&self.def_levels_sink[..], max_def_level)?;
+                        self.encode_levels_v2(&self.def_levels_sink[..], max_def_level);
                     def_levels_byte_len = levels.len();
                     buffer.extend_from_slice(&levels[..]);
                 }
@@ -794,18 +794,18 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
         encoding: Encoding,
         levels: &[i16],
         max_level: i16,
-    ) -> Result<Vec<u8>> {
+    ) -> Vec<u8> {
         let mut encoder = LevelEncoder::v1(encoding, max_level, levels.len());
-        encoder.put(levels)?;
+        encoder.put(levels);
         encoder.consume()
     }
 
     /// Encodes definition or repetition levels for Data Page v2.
     /// Encoding is always RLE.
     #[inline]
-    fn encode_levels_v2(&self, levels: &[i16], max_level: i16) -> Result<Vec<u8>> {
+    fn encode_levels_v2(&self, levels: &[i16], max_level: i16) -> Vec<u8> {
         let mut encoder = LevelEncoder::v2(max_level, levels.len());
-        encoder.put(levels)?;
+        encoder.put(levels);
         encoder.consume()
     }
 
@@ -830,7 +830,7 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
         let compressed_page = {
             let mut page = self
                 .encoder
-                .flush_dict_page()?
+                .flush_dict_page()
                 .ok_or_else(|| general_err!("Dictionary encoder is not set"))?;
 
             let uncompressed_size = page.buf.len();
@@ -1125,6 +1125,7 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "range end index 4 out of range for slice of length 2")]
     fn test_column_writer_not_enough_values_to_write() {
         let page_writer = get_test_page_writer();
         let props = Arc::new(WriterProperties::builder().build());

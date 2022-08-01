@@ -191,7 +191,7 @@ impl FallbackEncoder {
                 for idx in indices {
                     let value = values.value(*idx);
                     let value = value.as_ref();
-                    lengths.put(&[value.len() as i32]).unwrap();
+                    lengths.put(&[value.len() as i32]);
                     buffer.extend_from_slice(value);
                 }
             }
@@ -219,8 +219,8 @@ impl FallbackEncoder {
                     last_value.extend_from_slice(value);
 
                     buffer.extend_from_slice(&value[prefix_length..]);
-                    prefix_lengths.put(&[prefix_length as i32]).unwrap();
-                    suffix_lengths.put(&[suffix_length as i32]).unwrap();
+                    prefix_lengths.put(&[prefix_length as i32]);
+                    suffix_lengths.put(&[suffix_length as i32]);
                 }
             }
         }
@@ -249,13 +249,13 @@ impl FallbackEncoder {
         &mut self,
         min_value: Option<ByteArray>,
         max_value: Option<ByteArray>,
-    ) -> Result<DataPageValues<ByteArray>> {
+    ) -> DataPageValues<ByteArray> {
         let (buf, encoding) = match &mut self.encoder {
             FallbackEncoderImpl::Plain { buffer } => {
                 (std::mem::take(buffer), Encoding::PLAIN)
             }
             FallbackEncoderImpl::DeltaLength { buffer, lengths } => {
-                let lengths = lengths.flush_buffer()?;
+                let lengths = lengths.flush_buffer();
 
                 let mut out = Vec::with_capacity(lengths.len() + buffer.len());
                 out.extend_from_slice(lengths.data());
@@ -268,8 +268,8 @@ impl FallbackEncoder {
                 suffix_lengths,
                 ..
             } => {
-                let prefix_lengths = prefix_lengths.flush_buffer()?;
-                let suffix_lengths = suffix_lengths.flush_buffer()?;
+                let prefix_lengths = prefix_lengths.flush_buffer();
+                let suffix_lengths = suffix_lengths.flush_buffer();
 
                 let mut out = Vec::with_capacity(
                     prefix_lengths.len() + suffix_lengths.len() + buffer.len(),
@@ -281,13 +281,13 @@ impl FallbackEncoder {
             }
         };
 
-        Ok(DataPageValues {
+        DataPageValues {
             buf: buf.into(),
             num_values: std::mem::take(&mut self.num_values),
             encoding,
             min_value,
             max_value,
-        })
+        }
     }
 }
 
@@ -374,7 +374,7 @@ impl DictEncoder {
         &mut self,
         min_value: Option<ByteArray>,
         max_value: Option<ByteArray>,
-    ) -> Result<DataPageValues<ByteArray>> {
+    ) -> DataPageValues<ByteArray> {
         let num_values = self.indices.len();
         let buffer_len = self.estimated_data_page_size();
         let mut buffer = Vec::with_capacity(buffer_len);
@@ -382,20 +382,18 @@ impl DictEncoder {
 
         let mut encoder = RleEncoder::new_from_buf(self.bit_width(), buffer);
         for index in &self.indices {
-            if !encoder.put(*index as u64)? {
-                return Err(general_err!("Encoder doesn't have enough space"));
-            }
+            encoder.put(*index as u64)
         }
 
         self.indices.clear();
 
-        Ok(DataPageValues {
-            buf: encoder.consume()?.into(),
+        DataPageValues {
+            buf: encoder.consume().into(),
             num_values,
             encoding: Encoding::RLE_DICTIONARY,
             min_value,
             max_value,
-        })
+        }
     }
 }
 
@@ -447,18 +445,12 @@ impl ColumnValueEncoder for ByteArrayEncoder {
         })
     }
 
-    fn write(
-        &mut self,
-        _values: &Self::Values,
-        _offset: usize,
-        _len: usize,
-    ) -> Result<()> {
+    fn write(&mut self, _values: &Self::Values, _offset: usize, _len: usize) {
         unreachable!("should call write_gather instead")
     }
 
-    fn write_gather(&mut self, values: &Self::Values, indices: &[usize]) -> Result<()> {
+    fn write_gather(&mut self, values: &Self::Values, indices: &[usize]) {
         downcast_op!(values.data_type(), values, encode, indices, self);
-        Ok(())
     }
 
     fn num_values(&self) -> usize {
@@ -480,22 +472,21 @@ impl ColumnValueEncoder for ByteArrayEncoder {
         }
     }
 
-    fn flush_dict_page(&mut self) -> Result<Option<DictionaryPage>> {
+    fn flush_dict_page(&mut self) -> Option<DictionaryPage> {
         match self.dict_encoder.take() {
             Some(encoder) => {
-                if self.num_values != 0 {
-                    return Err(general_err!(
-                        "Must flush data pages before flushing dictionary"
-                    ));
-                }
+                assert_eq!(
+                    self.num_values, 0,
+                    "Must flush data pages before flushing dictionary"
+                );
 
-                Ok(Some(encoder.flush_dict_page()))
+                Some(encoder.flush_dict_page())
             }
-            _ => Ok(None),
+            _ => None,
         }
     }
 
-    fn flush_data_page(&mut self) -> Result<DataPageValues<ByteArray>> {
+    fn flush_data_page(&mut self) -> DataPageValues<ByteArray> {
         let min_value = self.min_value.take();
         let max_value = self.max_value.take();
 
