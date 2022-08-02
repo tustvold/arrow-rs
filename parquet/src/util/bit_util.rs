@@ -505,74 +505,40 @@ impl BitReader {
 
         let in_buf = self.buffer.data();
 
-        // Read directly into output buffer
-        match size_of::<T>() {
-            1 => {
-                let ptr = batch.as_mut_ptr() as *mut u8;
-                let out = unsafe { std::slice::from_raw_parts_mut(ptr, batch.len()) };
-                while values_to_read - i >= 8 {
-                    let out_slice = (&mut out[i..i + 8]).try_into().unwrap();
-                    unpack8(&in_buf[self.byte_offset..], out_slice, num_bits);
-                    self.byte_offset += num_bits;
-                    i += 8;
-                }
+        // Read in the smallest blocks possible
+        if num_bits <= 8 {
+            while values_to_read - i >= 8 {
+                let mut buf = [0_u8; 8];
+                unpack8(&in_buf[self.byte_offset..], &mut buf, num_bits);
+                self.byte_offset += num_bits;
+                zero_extend(&buf, &mut batch[i..]);
+                i += 8;
             }
-            2 => {
-                let ptr = batch.as_mut_ptr() as *mut u16;
-                let out = unsafe { std::slice::from_raw_parts_mut(ptr, batch.len()) };
-                while values_to_read - i >= 16 {
-                    let out_slice = (&mut out[i..i + 16]).try_into().unwrap();
-                    unpack16(&in_buf[self.byte_offset..], out_slice, num_bits);
-                    self.byte_offset += 2 * num_bits;
-                    i += 16;
-                }
+        } else if num_bits <= 16 {
+            while values_to_read - i >= 16 {
+                let mut buf = [0_u16; 16];
+                unpack16(&in_buf[self.byte_offset..], &mut buf, num_bits);
+                self.byte_offset += 2 * num_bits;
+                zero_extend(&buf, &mut batch[i..]);
+                i += 16;
             }
-            4 => {
-                let ptr = batch.as_mut_ptr() as *mut u32;
-                let out = unsafe { std::slice::from_raw_parts_mut(ptr, batch.len()) };
-                while values_to_read - i >= 32 {
-                    let out_slice = (&mut out[i..i + 32]).try_into().unwrap();
-                    unpack32(&in_buf[self.byte_offset..], out_slice, num_bits);
-                    self.byte_offset += 4 * num_bits;
-                    i += 32;
-                }
-            }
-            8 => {
-                let ptr = batch.as_mut_ptr() as *mut u64;
-                let out = unsafe { std::slice::from_raw_parts_mut(ptr, batch.len()) };
-                while values_to_read - i >= 64 {
-                    let out_slice = (&mut out[i..i + 64]).try_into().unwrap();
-                    unpack64(&in_buf[self.byte_offset..], out_slice, num_bits);
-                    self.byte_offset += 8 * num_bits;
-                    i += 64;
-                }
-            }
-            _ => unreachable!(),
-        }
 
-        // Try to read smaller batches if possible
-        if size_of::<T>() > 4 && values_to_read - i >= 32 && num_bits <= 32 {
-            let mut buf = [0_u32; 32];
-            unpack32(&in_buf[self.byte_offset..], &mut buf, num_bits);
-            self.byte_offset += 4 * num_bits;
-            zero_extend(&buf, &mut batch[i..]);
-            i += 32;
-        }
-
-        if size_of::<T>() > 2 && values_to_read - i >= 16 && num_bits <= 16 {
-            let mut buf = [0_u16; 16];
-            unpack16(&in_buf[self.byte_offset..], &mut buf, num_bits);
-            self.byte_offset += 2 * num_bits;
-            zero_extend(&buf, &mut batch[i..]);
-            i += 16;
-        }
-
-        if size_of::<T>() > 1 && values_to_read - i >= 8 && num_bits <= 8 {
-            let mut buf = [0_u8; 8];
-            unpack8(&in_buf[self.byte_offset..], &mut buf, num_bits);
-            self.byte_offset += num_bits;
-            zero_extend(&buf, &mut batch[i..]);
-            i += 8;
+        } else if num_bits <= 32 {
+            while values_to_read - i >= 32 {
+                let mut buf = [0_u32; 32];
+                unpack32(&in_buf[self.byte_offset..], &mut buf, num_bits);
+                self.byte_offset += 4 * num_bits;
+                zero_extend(&buf, &mut batch[i..]);
+                i += 32;
+            }
+        } else if num_bits <= 64 {
+            while values_to_read - i >= 64 {
+                let mut buf = [0_u64; 64];
+                unpack64(&in_buf[self.byte_offset..], &mut buf, num_bits);
+                self.byte_offset += 8 * num_bits;
+                zero_extend(&buf, &mut batch[i..]);
+                i += 64;
+            }
         }
 
         self.reload_buffer_values();
