@@ -104,7 +104,7 @@ macro_rules! unpack_impl {
                     let val = r(end_byte);
                     let b = val << (NUM_BITS - end_bit_offset);
 
-                    output[i] = a | (b & mask);
+                    output[i] = (a | b) & mask;
                 } else {
                     let val = r(start_byte);
                     output[i] = (val >> start_bit_offset) & mask;
