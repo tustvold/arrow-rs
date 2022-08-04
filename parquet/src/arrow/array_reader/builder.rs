@@ -46,13 +46,13 @@ pub fn build_array_reader(
     parquet_schema: SchemaDescPtr,
     arrow_schema: SchemaRef,
     mask: ProjectionMask,
-    row_groups: Box<dyn RowGroupCollection>,
+    row_groups: &dyn RowGroupCollection,
 ) -> Result<Box<dyn ArrayReader>> {
     let field =
         convert_schema(parquet_schema.as_ref(), mask, Some(arrow_schema.as_ref()))?;
 
     match &field {
-        Some(field) => build_reader(field, row_groups.as_ref()),
+        Some(field) => build_reader(field, row_groups),
         None => Ok(make_empty_array_reader(row_groups.num_rows())),
     }
 }
@@ -340,7 +340,7 @@ mod tests {
             file_reader.metadata().file_metadata().schema_descr_ptr(),
             Arc::new(arrow_schema),
             mask,
-            Box::new(file_reader),
+            &file_reader,
         )
         .unwrap();
 

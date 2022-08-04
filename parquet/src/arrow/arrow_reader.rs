@@ -182,7 +182,7 @@ impl ArrowReader for ParquetFileArrowReader {
                 .schema_descr_ptr(),
             Arc::new(self.get_schema()?),
             mask,
-            Box::new(self.file_reader.clone()),
+            &self.file_reader,
         )?;
 
         let selection = self.options.selection.clone().map(Into::into);
