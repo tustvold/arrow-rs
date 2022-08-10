@@ -61,12 +61,16 @@ pyo3 = { version = "0.16", default-features = false, optional = true }
 lexical-core = { version = "^0.8", default-features = false, features = ["write-integers", "write-floats", "parse-integers", "parse-floats"] }
 multiversion = { version = "0.6.1", default-features = false }
 bitflags = { version = "1.2.1", default-features = false }
+cranelift-jit = { version = "0.86", optional = true }
+cranelift-module = { version = "0.86", optional = true }
+cranelift-codegen = { version = "0.86", optional = true }
 
 [features]
 default = ["csv", "ipc"]
 csv = ["csv_crate"]
 ipc = ["flatbuffers"]
 simd = ["packed_simd"]
+comparator = ["cranelift-jit", "cranelift-module", "cranelift-codegen"]
 prettyprint = ["comfy-table"]
 # The test utils feature enables code used in benchmarks and tests but
 # not the core arrow code itself. Be aware that `rand` must be kept as
@@ -92,7 +96,7 @@ tempfile = { version = "3", default-features = false }
 [[example]]
 name = "dynamic_types"
 required-features = ["prettyprint"]
-path="./examples/dynamic_types.rs"
+path = "./examples/dynamic_types.rs"
 
 [[bench]]
 name = "aggregate_kernels"
