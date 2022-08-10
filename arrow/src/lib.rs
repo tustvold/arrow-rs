@@ -253,6 +253,8 @@ pub mod array;
 pub mod bitmap;
 pub mod buffer;
 mod bytes;
+#[cfg(feature = "comparator")]
+pub mod comparator;
 pub mod compute;
 #[cfg(feature = "csv")]
 pub mod csv;
