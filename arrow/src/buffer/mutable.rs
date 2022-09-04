@@ -378,6 +378,7 @@ impl MutableBuffer {
     ///
     /// This is similar to `from_trusted_len_iter_bool`, however, can be significantly faster
     /// as it eliminates the conditional `Iterator::next`
+    #[inline]
     pub(crate) fn collect_bool<F: FnMut(usize) -> bool>(len: usize, mut f: F) -> Self {
         let mut buffer = Self::new(bit_util::ceil(len, 8));
 
