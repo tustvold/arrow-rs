@@ -508,7 +508,7 @@ impl MutableBuffer {
         for _ in 0..chunks {
             let mut packed = 0;
             for bit_idx in 0..8 {
-                let r = unsafe { iterator.next().unwrap_unchecked() };
+                let r = iterator.next().unwrap_unchecked();
                 packed |= (r as u8) << bit_idx;
             }
 
@@ -518,7 +518,7 @@ impl MutableBuffer {
         if remainder != 0 {
             let mut packed = 0;
             for bit_idx in 0..remainder {
-                let r = unsafe { iterator.next().unwrap_unchecked() };
+                let r = iterator.next().unwrap_unchecked();
                 packed |= (r as u8) << bit_idx;
             }
             result.push_unchecked(packed)
