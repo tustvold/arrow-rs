@@ -36,6 +36,7 @@ use crate::datatypes::{
 };
 use crate::error::{ArrowError, Result};
 use crate::util::bit_util;
+use crate::util::bit_util::ceil;
 use regex::Regex;
 use std::collections::HashMap;
 
@@ -59,9 +60,30 @@ where
     let null_bit_buffer =
         combine_option_bitmap(&[left.data_ref(), right.data_ref()], left.len())?;
 
-    let buffer = MutableBuffer::collect_bool(left.len(), |i| unsafe {
-        op(left.value_unchecked(i), right.value_unchecked(i))
-    });
+    let mut buffer = MutableBuffer::new(ceil(left.len(), 8));
+
+    let chunks = left.len() / 8;
+    let remainder = left.len() % 8;
+    for chunk in 0..chunks {
+        let mut packed = 0;
+        for bit_idx in 0..8 {
+            let i = bit_idx + chunk * 8;
+            let r = unsafe { op(left.value_unchecked(i), right.value_unchecked(i)) };
+            packed |= (r as u8) << bit_idx;
+        }
+
+        unsafe { buffer.push_unchecked(packed) }
+    }
+
+    if remainder != 0 {
+        let mut packed = 0;
+        for bit_idx in 0..remainder {
+            let i = bit_idx + chunks * 8;
+            let r = unsafe { op(left.value_unchecked(i), right.value_unchecked(i)) };
+            packed |= (r as u8) << bit_idx;
+        }
+        unsafe { buffer.push_unchecked(packed) }
+    }
 
     let data = unsafe {
         ArrayData::new_unchecked(
@@ -88,9 +110,30 @@ where
         .null_buffer()
         .map(|b| b.bit_slice(left.offset(), left.len()));
 
-    let buffer = MutableBuffer::collect_bool(left.len(), |i| unsafe {
-        op(left.value_unchecked(i))
-    });
+    let mut buffer = MutableBuffer::new(ceil(left.len(), 8));
+
+    let chunks = left.len() / 8;
+    let remainder = left.len() % 8;
+    for chunk in 0..chunks {
+        let mut packed = 0;
+        for bit_idx in 0..8 {
+            let i = bit_idx + chunk * 8;
+            let r = unsafe { op(left.value_unchecked(i)) };
+            packed |= (r as u8) << bit_idx;
+        }
+
+        unsafe { buffer.push_unchecked(packed) }
+    }
+
+    if remainder != 0 {
+        let mut packed = 0;
+        for bit_idx in 0..remainder {
+            let i = bit_idx + chunks * 8;
+            let r = unsafe { op(left.value_unchecked(i)) };
+            packed |= (r as u8) << bit_idx;
+        }
+        unsafe { buffer.push_unchecked(packed) }
+    }
 
     let data = unsafe {
         ArrayData::new_unchecked(
