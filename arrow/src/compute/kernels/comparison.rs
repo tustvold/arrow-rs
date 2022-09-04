@@ -40,32 +40,6 @@ use crate::util::bit_util::ceil;
 use regex::Regex;
 use std::collections::HashMap;
 
-fn collect_bools<F: FnMut(usize) -> bool>(len: usize, mut f: F) -> Buffer {
-    let mut buffer = MutableBuffer::new(ceil(len, 8));
-
-    let chunks = len / 8;
-    let remainder = len % 8;
-    for chunk in 0..chunks {
-        let mut packed = 0;
-        for bit_idx in 0..8 {
-            let i = bit_idx + chunk * 8;
-            packed |= (f(i) as u8) << bit_idx;
-        }
-
-        unsafe { buffer.push_unchecked(packed) }
-    }
-
-    if remainder != 0 {
-        let mut packed = 0;
-        for bit_idx in 0..remainder {
-            let i = bit_idx + chunks * 8;
-            packed |= (f(i) as u8) << bit_idx;
-        }
-        unsafe { buffer.push_unchecked(packed) }
-    }
-    buffer.into()
-}
-
 /// Helper function to perform boolean lambda function on values from two array accessors, this
 /// version does not attempt to use SIMD.
 fn compare_op<T: ArrayAccessor, S: ArrayAccessor, F>(
@@ -86,7 +60,7 @@ where
     let null_bit_buffer =
         combine_option_bitmap(&[left.data_ref(), right.data_ref()], left.len())?;
 
-    let buffer = collect_bools(left.len(), |i| unsafe {
+    let buffer = MutableBuffer::collect_bool(left.len(), |i| unsafe {
         op(left.value_unchecked(i), right.value_unchecked(i))
     });
 
@@ -97,7 +71,7 @@ where
             None,
             null_bit_buffer,
             0,
-            vec![buffer],
+            vec![Buffer::from(buffer)],
             vec![],
         )
     };
@@ -115,7 +89,9 @@ where
         .null_buffer()
         .map(|b| b.bit_slice(left.offset(), left.len()));
 
-    let buffer = collect_bools(left.len(), |i| unsafe { op(left.value_unchecked(i)) });
+    let buffer = MutableBuffer::collect_bool(left.len(), |i| unsafe {
+        op(left.value_unchecked(i))
+    });
 
     let data = unsafe {
         ArrayData::new_unchecked(
@@ -124,7 +100,7 @@ where
             None,
             null_bit_buffer,
             0,
-            vec![buffer],
+            vec![Buffer::from(buffer)],
             vec![],
         )
     };
