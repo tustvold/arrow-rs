@@ -496,36 +496,32 @@ impl MutableBuffer {
         mut iterator: I,
     ) -> Self {
         let (_, upper) = iterator.size_hint();
-        let upper = upper.expect("from_trusted_len_iter requires an upper limit");
+        let len = upper.expect("from_trusted_len_iter requires an upper limit");
 
         let mut result = {
-            let byte_capacity: usize = upper.saturating_add(7) / 8;
+            let byte_capacity: usize = len.saturating_add(7) / 8;
             MutableBuffer::new(byte_capacity)
         };
 
-        'a: loop {
-            let mut byte_accum: u8 = 0;
-            let mut mask: u8 = 1;
-
-            //collect (up to) 8 bits into a byte
-            while mask != 0 {
-                if let Some(value) = iterator.next() {
-                    byte_accum |= match value {
-                        true => mask,
-                        false => 0,
-                    };
-                    mask <<= 1;
-                } else {
-                    if mask != 1 {
-                        // Add last byte
-                        result.push_unchecked(byte_accum);
-                    }
-                    break 'a;
-                }
+        let chunks = len / 8;
+        let remainder = len % 8;
+        for _ in 0..chunks {
+            let mut packed = 0;
+            for bit_idx in 0..8 {
+                let r = iterator.next().unwrap();
+                packed |= (r as u8) << bit_idx;
             }
 
-            // Soundness: from_trusted_len
-            result.push_unchecked(byte_accum);
+            result.push_unchecked(packed)
+        }
+
+        if remainder != 0 {
+            let mut packed = 0;
+            for bit_idx in 0..remainder {
+                let r = iterator.next().unwrap();
+                packed |= (r as u8) << bit_idx;
+            }
+            result.push_unchecked(packed)
         }
         result
     }
@@ -540,10 +536,10 @@ impl MutableBuffer {
     pub unsafe fn try_from_trusted_len_iter<
         E,
         T: ArrowNativeType,
-        I: Iterator<Item = std::result::Result<T, E>>,
+        I: Iterator<Item = Result<T, E>>,
     >(
         iterator: I,
-    ) -> std::result::Result<Self, E> {
+    ) -> Result<Self, E> {
         let item_size = std::mem::size_of::<T>();
         let (_, upper) = iterator.size_hint();
         let upper = upper.expect("try_from_trusted_len_iter requires an upper limit");
