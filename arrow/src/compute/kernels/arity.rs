@@ -280,7 +280,7 @@ where
     let null_buffer = combine_option_bitmap(&[a.data(), b.data()], len).unwrap();
     let null_count = null_buffer
         .as_ref()
-        .map(|x| x.count_set_bits())
+        .map(|x| len - x.count_set_bits())
         .unwrap_or_default();
 
     let values = a.values().iter().zip(b.values()).map(|(l, r)| op(*l, *r));
@@ -315,7 +315,7 @@ where
     let null_buffer = combine_option_bitmap(&[a.data(), b.data()], len).unwrap();
     let null_count = null_buffer
         .as_ref()
-        .map(|x| x.count_set_bits())
+        .map(|x| len - x.count_set_bits())
         .unwrap_or_default();
 
     let mut buffer = BufferBuilder::<O::Native>::new(len);
