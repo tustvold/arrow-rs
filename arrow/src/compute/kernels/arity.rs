@@ -73,7 +73,7 @@ where
 {
     let mut buffer = MutableBuffer::new(array.len() * std::mem::size_of::<O::Native>());
     for v in array.values() {
-        buffer.push(op(*v))
+        unsafe { buffer.push_unchecked(op(*v)) }
     }
 
     let data = into_primitive_array_data::<_, O>(array, buffer.into());
