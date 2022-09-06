@@ -18,7 +18,7 @@
 //! Defines kernels suitable to perform operations to primitive arrays.
 
 use crate::array::{Array, ArrayData, ArrayRef, DictionaryArray, PrimitiveArray};
-use crate::buffer::Buffer;
+use crate::buffer::{Buffer, MutableBuffer};
 use crate::datatypes::{
     ArrowNumericType, ArrowPrimitiveType, DataType, Int16Type, Int32Type, Int64Type,
     Int8Type, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
@@ -31,14 +31,14 @@ fn into_primitive_array_data<I: ArrowPrimitiveType, O: ArrowPrimitiveType>(
     array: &PrimitiveArray<I>,
     buffer: Buffer,
 ) -> ArrayData {
+    let data = array.data();
+
     unsafe {
         ArrayData::new_unchecked(
             O::DATA_TYPE,
             array.len(),
-            None,
-            array
-                .data_ref()
-                .null_buffer()
+            Some(data.null_count()),
+            data.null_buffer()
                 .map(|b| b.bit_slice(array.offset(), array.len())),
             0,
             vec![buffer],
@@ -49,7 +49,7 @@ fn into_primitive_array_data<I: ArrowPrimitiveType, O: ArrowPrimitiveType>(
 
 /// Applies an unary and infallible function to a primitive array.
 /// This is the fastest way to perform an operation on a primitive array when
-/// the benefits of a vectorized operation outweights the cost of branching nulls and non-nulls.
+/// the benefits of a vectorized operation outweigh the cost of branching nulls and non-nulls.
 /// # Implementation
 /// This will apply the function for all values, including those on null slots.
 /// This implies that the operation must be infallible for any value of the corresponding type
@@ -71,15 +71,12 @@ where
     O: ArrowPrimitiveType,
     F: Fn(I::Native) -> O::Native,
 {
-    let values = array.values().iter().map(|v| op(*v));
-    // JUSTIFICATION
-    //  Benefit
-    //      ~60% speedup
-    //  Soundness
-    //      `values` is an iterator with a known size because arrays are sized.
-    let buffer = unsafe { Buffer::from_trusted_len_iter(values) };
+    let mut buffer = MutableBuffer::new(array.len() * std::mem::size_of::<O::Native>());
+    for v in array.values() {
+        buffer.push(op(*v))
+    }
 
-    let data = into_primitive_array_data::<_, O>(array, buffer);
+    let data = into_primitive_array_data::<_, O>(array, buffer.into());
     PrimitiveArray::<O>::from(data)
 }
 
