@@ -31,12 +31,11 @@ use crate::buffer::Buffer;
 #[cfg(feature = "simd")]
 use crate::buffer::MutableBuffer;
 use crate::compute::kernels::arity::unary;
-use crate::compute::unary_dyn;
 use crate::compute::util::combine_option_bitmap;
+use crate::compute::{binary, try_binary, unary_dyn};
 use crate::datatypes::{
-    native_op::ArrowNativeTypeOp, ArrowNumericType, ArrowPrimitiveType, DataType,
-    Date32Type, Date64Type, IntervalDayTimeType, IntervalMonthDayNanoType, IntervalUnit,
-    IntervalYearMonthType,
+    native_op::ArrowNativeTypeOp, ArrowNumericType, DataType, Date32Type, Date64Type,
+    IntervalDayTimeType, IntervalMonthDayNanoType, IntervalUnit, IntervalYearMonthType,
 };
 use crate::datatypes::{
     Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type,
@@ -74,33 +73,7 @@ where
         ));
     }
 
-    let null_bit_buffer =
-        combine_option_bitmap(&[left.data_ref(), right.data_ref()], left.len())?;
-
-    let values = left
-        .values()
-        .iter()
-        .zip(right.values().iter())
-        .map(|(l, r)| op(*l, *r));
-    // JUSTIFICATION
-    //  Benefit
-    //      ~60% speedup
-    //  Soundness
-    //      `values` is an iterator with a known size from a PrimitiveArray
-    let buffer = unsafe { Buffer::from_trusted_len_iter(values) };
-
-    let data = unsafe {
-        ArrayData::new_unchecked(
-            LT::DATA_TYPE,
-            left.len(),
-            None,
-            null_bit_buffer,
-            0,
-            vec![buffer],
-            vec![],
-        )
-    };
-    Ok(PrimitiveArray::<LT>::from(data))
+    Ok(binary(left, right, op))
 }
 
 /// This is similar to `math_op` as it performs given operation between two input primitive arrays.
@@ -122,37 +95,22 @@ where
         ));
     }
 
-    let left_iter = ArrayIter::new(left);
-    let right_iter = ArrayIter::new(right);
-
-    let values: Result<Vec<Option<<LT as ArrowPrimitiveType>::Native>>> = left_iter
-        .into_iter()
-        .zip(right_iter.into_iter())
-        .map(|(l, r)| {
-            if let (Some(l), Some(r)) = (l, r) {
-                let result = op(l, r);
-                if let Some(r) = result {
-                    Ok(Some(r))
-                } else {
-                    // Overflow
-                    Err(ArrowError::ComputeError(format!(
-                        "Overflow happened on: {:?}, {:?}",
-                        l, r
-                    )))
-                }
-            } else {
-                Ok(None)
-            }
+    try_binary(left, right, |a, b| {
+        op(a, b).ok_or_else(|| {
+            ArrowError::ComputeError(format!("Overflow happened on: {:?}, {:?}", a, b))
         })
-        .collect();
-
-    let values = values?;
-
-    Ok(PrimitiveArray::<LT>::from_iter(values))
+    })
 }
 
-/// This is similar to `math_checked_op` but just for divide op.
-fn math_checked_divide<LT, RT, F>(
+/// Helper function for operations where a valid `0` on the right array should
+/// result in an [ArrowError::DivideByZero], namely the division and modulo operations
+///
+/// # Errors
+///
+/// This function errors if:
+/// * the arrays have different lengths
+/// * there is an element where both left and right values are valid and the right value is `0`
+fn math_checked_divide_op<LT, RT, F>(
     left: &PrimitiveArray<LT>,
     right: &PrimitiveArray<RT>,
     op: F,
@@ -169,74 +127,18 @@ where
         ));
     }
 
-    let left_iter = ArrayIter::new(left);
-    let right_iter = ArrayIter::new(right);
-
-    let values: Result<Vec<Option<<LT as ArrowPrimitiveType>::Native>>> = left_iter
-        .into_iter()
-        .zip(right_iter.into_iter())
-        .map(|(l, r)| {
-            if let (Some(l), Some(r)) = (l, r) {
-                let result = op(l, r);
-                if let Some(r) = result {
-                    Ok(Some(r))
-                } else if r.is_zero() {
-                    Err(ArrowError::ComputeError(format!(
-                        "DivideByZero on: {:?}, {:?}",
-                        l, r
-                    )))
-                } else {
-                    // Overflow
-                    Err(ArrowError::ComputeError(format!(
-                        "Overflow happened on: {:?}, {:?}",
-                        l, r
-                    )))
-                }
-            } else {
-                Ok(None)
-            }
-        })
-        .collect();
-
-    let values = values?;
-
-    Ok(PrimitiveArray::<LT>::from_iter(values))
-}
-
-/// Helper function for operations where a valid `0` on the right array should
-/// result in an [ArrowError::DivideByZero], namely the division and modulo operations
-///
-/// # Errors
-///
-/// This function errors if:
-/// * the arrays have different lengths
-/// * there is an element where both left and right values are valid and the right value is `0`
-fn math_checked_divide_op<T, F>(
-    left: &PrimitiveArray<T>,
-    right: &PrimitiveArray<T>,
-    op: F,
-) -> Result<PrimitiveArray<T>>
-where
-    T: ArrowNumericType,
-    T::Native: One + Zero,
-    F: Fn(T::Native, T::Native) -> T::Native,
-{
-    if left.len() != right.len() {
-        return Err(ArrowError::ComputeError(
-            "Cannot perform math operation on arrays of different length".to_string(),
-        ));
-    }
-
-    let null_bit_buffer =
-        combine_option_bitmap(&[left.data_ref(), right.data_ref()], left.len())?;
-
-    math_checked_divide_op_on_iters(
-        left.into_iter(),
-        right.into_iter(),
-        op,
-        left.len(),
-        null_bit_buffer,
-    )
+    try_binary(left, right, |l, r| {
+        if r.is_zero() {
+            Err(ArrowError::DivideByZero)
+        } else {
+            op(l, r).ok_or_else(|| {
+                ArrowError::ComputeError(format!(
+                    "Overflow happened on: {:?}, {:?}",
+                    l, r
+                ))
+            })
+        }
+    })
 }
 
 /// Helper function for operations where a valid `0` on the right array should
@@ -1128,7 +1030,7 @@ where
         a % b
     });
     #[cfg(not(feature = "simd"))]
-    return math_checked_divide_op(left, right, |a, b| a % b);
+    return math_checked_divide_op(left, right, |a, b| Some(a % b));
 }
 
 /// Perform `left / right` operation on two arrays. If either left or right value is null
@@ -1148,7 +1050,7 @@ where
     #[cfg(feature = "simd")]
     return simd_checked_divide_op(&left, &right, simd_checked_divide::<T>, |a, b| a / b);
     #[cfg(not(feature = "simd"))]
-    return math_checked_divide(left, right, |a, b| a.div_checked(b));
+    return math_checked_divide_op(left, right, |a, b| a.div_checked(b));
 }
 
 /// Perform `left / right` operation on two arrays. If either left or right value is null
@@ -1162,7 +1064,7 @@ pub fn divide_dyn(left: &dyn Array, right: &dyn Array) -> Result<ArrayRef> {
         _ => {
             downcast_primitive_array!(
                 (left, right) => {
-                    math_checked_divide_op(left, right, |a, b| a / b).map(|a| Arc::new(a) as ArrayRef)
+                    math_checked_divide_op(left, right, |a, b| Some(a / b)).map(|a| Arc::new(a) as ArrayRef)
                 }
                 _ => Err(ArrowError::CastError(format!(
                     "Unsupported data type {}, {}",
