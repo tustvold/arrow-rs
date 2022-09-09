@@ -30,7 +30,7 @@ use arrow::{compute::kernels::arithmetic::*, util::test_util::seedable_rng};
 
 fn add_benchmark(c: &mut Criterion) {
     const BATCH_SIZE: usize = 64 * 1024;
-    for density in [0., 0.1, 0.5, 0.9, 1.0] {
+    for null_density in [0., 0.1, 0.5, 0.9, 1.0] {
         let arr_a = create_primitive_array::<Float32Type>(BATCH_SIZE, null_density);
         let arr_b = create_primitive_array::<Float32Type>(BATCH_SIZE, null_density);
         let scalar = seedable_rng().gen();
