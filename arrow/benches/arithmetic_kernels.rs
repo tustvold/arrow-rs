@@ -38,17 +38,26 @@ fn add_benchmark(c: &mut Criterion) {
         c.bench_function(&format!("add({})", null_density), |b| {
             b.iter(|| criterion::black_box(add(&arr_a, &arr_b).unwrap()))
         });
+        c.bench_function(&format!("add_checked({})", null_density), |b| {
+            b.iter(|| criterion::black_box(add_checked(&arr_a, &arr_b).unwrap()))
+        });
         c.bench_function(&format!("add_scalar({})", null_density), |b| {
             b.iter(|| criterion::black_box(add_scalar(&arr_a, scalar).unwrap()))
         });
         c.bench_function(&format!("subtract({})", null_density), |b| {
             b.iter(|| criterion::black_box(subtract(&arr_a, &arr_b).unwrap()))
         });
+        c.bench_function(&format!("subtract_checked({})", null_density), |b| {
+            b.iter(|| criterion::black_box(subtract_checked(&arr_a, &arr_b).unwrap()))
+        });
         c.bench_function(&format!("subtract_scalar({})", null_density), |b| {
             b.iter(|| criterion::black_box(subtract_scalar(&arr_a, scalar).unwrap()))
         });
         c.bench_function(&format!("multiply({})", null_density), |b| {
             b.iter(|| criterion::black_box(multiply(&arr_a, &arr_b).unwrap()))
+        });
+        c.bench_function(&format!("multiply_checked({})", null_density), |b| {
+            b.iter(|| criterion::black_box(multiply_checked(&arr_a, &arr_b).unwrap()))
         });
         c.bench_function(&format!("multiply_scalar({})", null_density), |b| {
             b.iter(|| criterion::black_box(multiply_scalar(&arr_a, scalar).unwrap()))

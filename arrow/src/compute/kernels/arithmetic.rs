@@ -802,7 +802,7 @@ pub fn add_scalar<T>(
     scalar: T::Native,
 ) -> Result<PrimitiveArray<T>>
 where
-    T: datatypes::ArrowNumericType,
+    T: ArrowNumericType,
     T::Native: Add<Output = T::Native>,
 {
     Ok(unary(array, |value| value + scalar))
@@ -813,7 +813,7 @@ where
 /// the scalar, or a `DictionaryArray` of the value type same as the scalar.
 pub fn add_scalar_dyn<T>(array: &dyn Array, scalar: T::Native) -> Result<ArrayRef>
 where
-    T: datatypes::ArrowNumericType,
+    T: ArrowNumericType,
     T::Native: Add<Output = T::Native>,
 {
     unary_dyn::<_, T>(array, |value| value + scalar)
@@ -829,7 +829,7 @@ pub fn subtract<T>(
     right: &PrimitiveArray<T>,
 ) -> Result<PrimitiveArray<T>>
 where
-    T: datatypes::ArrowNumericType,
+    T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
     math_op(left, right, |a, b| a.sub_wrapping(b))
@@ -845,7 +845,7 @@ pub fn subtract_checked<T>(
     right: &PrimitiveArray<T>,
 ) -> Result<PrimitiveArray<T>>
 where
-    T: datatypes::ArrowNumericType,
+    T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
     math_checked_op(left, right, |a, b| a.sub_checked(b))
@@ -935,7 +935,7 @@ pub fn multiply<T>(
     right: &PrimitiveArray<T>,
 ) -> Result<PrimitiveArray<T>>
 where
-    T: datatypes::ArrowNumericType,
+    T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
     math_op(left, right, |a, b| a.mul_wrapping(b))
@@ -951,7 +951,7 @@ pub fn multiply_checked<T>(
     right: &PrimitiveArray<T>,
 ) -> Result<PrimitiveArray<T>>
 where
-    T: datatypes::ArrowNumericType,
+    T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
     math_checked_op(left, right, |a, b| a.mul_checked(b))
@@ -1002,7 +1002,7 @@ where
 /// the scalar, or a `DictionaryArray` of the value type same as the scalar.
 pub fn multiply_scalar_dyn<T>(array: &dyn Array, scalar: T::Native) -> Result<ArrayRef>
 where
-    T: datatypes::ArrowNumericType,
+    T: ArrowNumericType,
     T::Native: Add<Output = T::Native>
         + Sub<Output = T::Native>
         + Mul<Output = T::Native>
@@ -1022,7 +1022,7 @@ pub fn modulus<T>(
     right: &PrimitiveArray<T>,
 ) -> Result<PrimitiveArray<T>>
 where
-    T: datatypes::ArrowNumericType,
+    T: ArrowNumericType,
     T::Native: Rem<Output = T::Native> + Zero + One,
 {
     #[cfg(feature = "simd")]
@@ -1101,7 +1101,7 @@ pub fn modulus_scalar<T>(
     modulo: T::Native,
 ) -> Result<PrimitiveArray<T>>
 where
-    T: datatypes::ArrowNumericType,
+    T: ArrowNumericType,
     T::Native: Rem<Output = T::Native> + Zero,
 {
     if modulo.is_zero() {
@@ -1119,7 +1119,7 @@ pub fn divide_scalar<T>(
     divisor: T::Native,
 ) -> Result<PrimitiveArray<T>>
 where
-    T: datatypes::ArrowNumericType,
+    T: ArrowNumericType,
     T::Native: Div<Output = T::Native> + Zero,
 {
     if divisor.is_zero() {
@@ -1134,7 +1134,7 @@ where
 /// same as the scalar, or a `DictionaryArray` of the value type same as the scalar.
 pub fn divide_scalar_dyn<T>(array: &dyn Array, divisor: T::Native) -> Result<ArrayRef>
 where
-    T: datatypes::ArrowNumericType,
+    T: ArrowNumericType,
     T::Native: Div<Output = T::Native> + Zero,
 {
     if divisor.is_zero() {
