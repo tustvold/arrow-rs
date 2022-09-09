@@ -27,32 +27,8 @@ use crate::datatypes::{
     Int8Type, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
 };
 use crate::error::{ArrowError, Result};
-use crate::util::bit_iterator::{BitIndexIterator, BitSliceIterator};
+use crate::util::bit_iterator::try_for_each_valid_idx;
 use std::sync::Arc;
-
-fn try_for_each_valid<F: FnMut(usize) -> Result<()>>(
-    len: usize,
-    null_count: usize,
-    nulls: Option<&[u8]>,
-    f: F,
-) -> Result<()> {
-    let valid_count = len - null_count;
-
-    if valid_count == len {
-        (0..len).try_for_each(f)
-    } else if null_count != len {
-        let selectivity = valid_count as f64 / len as f64;
-        if selectivity > 0.8 {
-            BitSliceIterator::new(nulls.unwrap(), 0, len)
-                .flat_map(|(start, end)| start..end)
-                .try_for_each(f)
-        } else {
-            BitIndexIterator::new(nulls.unwrap(), 0, len).try_for_each(f)
-        }
-    } else {
-        Ok(())
-    }
-}
 
 #[inline]
 unsafe fn build_primitive_array<O: ArrowPrimitiveType>(
@@ -75,7 +51,9 @@ unsafe fn build_primitive_array<O: ArrowPrimitiveType>(
 /// Applies an unary and infallible function to a primitive array.
 /// This is the fastest way to perform an operation on a primitive array when
 /// the benefits of a vectorized operation outweigh the cost of branching nulls and non-nulls.
+///
 /// # Implementation
+///
 /// This will apply the function for all values, including those on null slots.
 /// This implies that the operation must be infallible for any value of the corresponding type
 /// or this function may panic.
@@ -117,7 +95,8 @@ where
 /// Applies a unary and fallible function to all valid values in a primitive array
 ///
 /// This is unlike [`unary`] which will apply an infallible function to all rows regardless
-/// of validity.
+/// of validity, in many cases this will be significantly faster and should be preferred
+/// if `op` is infallible.
 ///
 /// Note: LLVM is currently unable to effectively vectorize fallible operations
 pub fn try_unary<I, F, O>(array: &PrimitiveArray<I>, op: F) -> Result<PrimitiveArray<O>>
@@ -138,9 +117,9 @@ where
         .null_buffer()
         .map(|b| b.bit_slice(array.offset(), array.len()));
 
-    try_for_each_valid(array.len(), null_count, null_buffer.as_deref(), |idx| {
+    try_for_each_valid_idx(array.len(), 0, null_count, null_buffer.as_deref(), |idx| {
         unsafe { *slice.get_unchecked_mut(idx) = op(array.value_unchecked(idx))? };
-        Ok(())
+        Ok::<_, ArrowError>(())
     })?;
 
     Ok(unsafe { build_primitive_array(len, buffer.finish(), null_count, null_buffer) })
@@ -261,6 +240,18 @@ where
     }
 }
 
+/// Given two arrays of length `len`, calls `op(a[i], b[i])` for `i` in `0..len`, collecting
+/// the results in a [`PrimitiveArray`]. If any index is null in either `a` or `b`, the
+/// corresponding index in the result will also be null
+///
+/// Like [`unary`] the provided function is evaluated for every index, ignoring validity. This
+/// is beneficial when the cost of the operation is low compared to the cost of branching, and
+/// especially when the operation can be vectorised, however, requires `op` to be infallible
+/// for all possible values of its inputs
+///
+/// # Panic
+///
+/// Panics if the arrays have different lengths
 pub fn binary<A, B, F, O>(
     a: &PrimitiveArray<A>,
     b: &PrimitiveArray<B>,
@@ -296,6 +287,15 @@ where
     unsafe { build_primitive_array(len, buffer, null_count, null_buffer) }
 }
 
+/// Applies the provided fallible binary operation across `a` and `b`, returning any error,
+/// and collecting the results into a [`PrimitiveArray`]. If any index is null in either `a`
+/// or `b`, the corresponding index in the result will also be null
+///
+/// Like [`try_unary`] the function is only evaluated for non-null indices
+///
+/// # Panic
+///
+/// Panics if the arrays have different lengths
 pub fn try_binary<A, B, F, O>(
     a: &PrimitiveArray<A>,
     b: &PrimitiveArray<B>,
@@ -324,12 +324,12 @@ where
     buffer.append_n_zeroed(len);
     let slice = buffer.as_slice_mut();
 
-    try_for_each_valid(len, null_count, null_buffer.as_deref(), |idx| {
+    try_for_each_valid_idx(len, 0, null_count, null_buffer.as_deref(), |idx| {
         unsafe {
             *slice.get_unchecked_mut(idx) =
                 op(a.value_unchecked(idx), b.value_unchecked(idx))?
         };
-        Ok(())
+        Ok::<_, ArrowError>(())
     })?;
 
     Ok(unsafe { build_primitive_array(len, buffer.finish(), null_count, null_buffer) })
