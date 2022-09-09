@@ -36,10 +36,12 @@ fn try_for_each_valid<F: FnMut(usize) -> Result<()>>(
     nulls: Option<&[u8]>,
     f: F,
 ) -> Result<()> {
-    if null_count == 0 {
+    let valid_count = len - null_count;
+
+    if valid_count == len {
         (0..len).try_for_each(f)
     } else if null_count != len {
-        let selectivity = null_count as f64 / len as f64;
+        let selectivity = valid_count as f64 / len as f64;
         if selectivity > 0.8 {
             BitSliceIterator::new(nulls.unwrap(), 0, len)
                 .flat_map(|(start, end)| start..end)
