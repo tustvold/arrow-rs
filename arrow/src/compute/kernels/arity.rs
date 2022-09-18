@@ -26,6 +26,7 @@ use crate::datatypes::{ArrowNumericType, ArrowPrimitiveType};
 use crate::downcast_dictionary_array;
 use crate::error::{ArrowError, Result};
 use crate::util::bit_iterator::try_for_each_valid_idx;
+use arrow_buffer::MutableBuffer;
 use std::sync::Arc;
 
 #[inline]
@@ -107,14 +108,13 @@ where
     let null_count = array.null_count();
 
     if null_count == 0 {
-        let values = array.values().iter().map(|v| op(*v));
-        // JUSTIFICATION
-        //  Benefit
-        //      ~60% speedup
-        //  Soundness
-        //      `values` is an iterator with a known size because arrays are sized.
-        let buffer = unsafe { Buffer::try_from_trusted_len_iter(values)? };
-        return Ok(unsafe { build_primitive_array(len, buffer, 0, None) });
+        let mut buffer = MutableBuffer::new(std::mem::size_of::<O::Native>() * len);
+
+        for i in 0..len {
+            unsafe { buffer.push_unchecked(op(array.value_unchecked(i))?) }
+        }
+
+        return Ok(unsafe { build_primitive_array(len, buffer.into(), 0, None) });
     }
 
     let null_buffer = array
@@ -305,14 +305,15 @@ where
     let len = a.len();
 
     if a.null_count() == 0 && b.null_count() == 0 {
-        let values = a.values().iter().zip(b.values()).map(|(l, r)| op(*l, *r));
-        let buffer = unsafe { Buffer::try_from_trusted_len_iter(values) }?;
-        // JUSTIFICATION
-        //  Benefit
-        //      ~75% speedup
-        //  Soundness
-        //      `values` is an iterator with a known size from a PrimitiveArray
-        return Ok(unsafe { build_primitive_array(len, buffer, 0, None) });
+        let mut buffer = MutableBuffer::new(std::mem::size_of::<O::Native>() * len);
+
+        for i in 0..len {
+            unsafe {
+                buffer.push_unchecked(op(a.value_unchecked(i), b.value_unchecked(i))?)
+            }
+        }
+
+        return Ok(unsafe { build_primitive_array(len, buffer.into(), 0, None) });
     }
 
     let null_buffer = combine_option_bitmap(&[a.data(), b.data()], len).unwrap();
