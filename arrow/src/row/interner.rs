@@ -305,12 +305,17 @@ struct Slot {
 ///
 #[derive(Debug, Clone)]
 struct Bucket {
-    slots: Box<[Slot]>,
+    slots: Box<[Slot; 255]>,
 }
 
 impl Default for Bucket {
     fn default() -> Self {
-        let slots = (0..255).map(|_| Slot::default()).collect::<Vec<_>>().into();
+        let slots = (0..255)
+            .map(|_| Slot::default())
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+            .try_into()
+            .unwrap();
         Self { slots }
     }
 }
