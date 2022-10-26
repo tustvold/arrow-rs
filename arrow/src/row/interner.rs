@@ -15,8 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use hashbrown::hash_map::RawEntryMut;
-use hashbrown::HashMap;
+use std::cmp::Ordering;
 use std::num::NonZeroU32;
 use std::ops::Index;
 
@@ -34,10 +33,6 @@ pub struct OrderPreservingInterner {
     values: InternBuffer,
     /// Key allocation data structure
     bucket: Box<Bucket>,
-
-    // A hash table used to perform faster re-keying, and detect duplicates
-    hasher: ahash::RandomState,
-    lookup: HashMap<Interned, (), ()>,
 }
 
 impl OrderPreservingInterner {
@@ -49,75 +44,46 @@ impl OrderPreservingInterner {
         I: IntoIterator<Item = Option<V>>,
         V: AsRef<[u8]>,
     {
-        let iter = input.into_iter();
-        let capacity = iter.size_hint().0;
-        let mut out = Vec::with_capacity(capacity);
-
-        // (index in output, hash value, value)
-        let mut to_intern: Vec<(usize, u64, V)> = Vec::with_capacity(capacity);
+        // (index in output, value)
         let mut to_intern_len = 0;
+        let mut to_intern: Vec<(usize, V)> = input
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, v)| {
+                v.map(|v| {
+                    to_intern_len += v.as_ref().len();
+                    (idx, v)
+                })
+            })
+            .collect();
+        to_intern.sort_unstable_by(|(_, a), (_, b)| a.as_ref().cmp(b.as_ref()));
 
-        for (idx, item) in iter.enumerate() {
-            let value: V = match item {
-                Some(value) => value,
-                None => {
-                    out.push(None);
-                    continue;
-                }
-            };
-
-            let v = value.as_ref();
-            let hash = self.hasher.hash_one(v);
-            let entry = self
-                .lookup
-                .raw_entry_mut()
-                .from_hash(hash, |a| &self.values[*a] == v);
-
-            match entry {
-                RawEntryMut::Occupied(o) => out.push(Some(*o.key())),
-                RawEntryMut::Vacant(_) => {
-                    // Push placeholder
-                    out.push(None);
-                    to_intern_len += v.len();
-                    to_intern.push((idx, hash, value));
-                }
-            };
-        }
-
-        to_intern.sort_unstable_by(|(_, _, a), (_, _, b)| a.as_ref().cmp(b.as_ref()));
-
+        // Approximation
         self.keys.offsets.reserve(to_intern.len());
-        self.keys.values.reserve(to_intern.len()); // Approximation
+        self.keys.values.reserve(to_intern.len());
         self.values.offsets.reserve(to_intern.len());
         self.values.values.reserve(to_intern_len);
 
-        for (idx, hash, value) in to_intern {
+        let mut out: Vec<_> = (0..to_intern.len()).map(|_| None).collect();
+        for (idx, value) in to_intern {
             let val = value.as_ref();
+            let before = self.keys.values.len();
+            let result =
+                self.bucket
+                    .try_insert(&mut self.values, val, &mut self.keys.values);
 
-            let entry = self
-                .lookup
-                .raw_entry_mut()
-                .from_hash(hash, |a| &self.values[*a] == val);
-
-            match entry {
-                RawEntryMut::Occupied(o) => {
-                    out[idx] = Some(*o.key());
-                }
-                RawEntryMut::Vacant(v) => {
-                    let val = value.as_ref();
-                    self.bucket
-                        .insert(&mut self.values, val, &mut self.keys.values);
+            let interned = match result {
+                Ok(interned) => {
                     self.keys.values.push(0);
-                    let interned = self.keys.append();
-
-                    let hasher = &mut self.hasher;
-                    let values = &self.values;
-                    v.insert_with_hasher(hash, interned, (), |key| {
-                        hasher.hash_one(&values[*key])
-                    });
-                    out[idx] = Some(interned);
+                    self.keys.append();
+                    interned
                 }
-            }
+                Err(interned) => {
+                    self.keys.values.truncate(before);
+                    interned
+                }
+            };
+            out[idx] = Some(interned);
         }
 
         out
@@ -280,39 +246,47 @@ impl Bucket {
     /// Insert `data` into this bucket or one of its children, appending the
     /// normalized key to `out` as it is constructed
     ///
-    /// # Panics
-    ///
-    /// Panics if the value already exists
-    fn insert(&mut self, values_buf: &mut InternBuffer, data: &[u8], out: &mut Vec<u8>) {
+    /// Returns an error if the value already exists
+    fn try_insert(
+        &mut self,
+        values_buf: &mut InternBuffer,
+        data: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<Interned, Interned> {
         let slots_len = self.slots.len() as u8;
         // We optimise the case of inserting a value directly after those already inserted
         // as [`OrderPreservingInterner::intern`] sorts values prior to interning them
         match self.slots.last() {
             Some(slot) => {
-                if &values_buf[slot.value] < data {
-                    if slots_len == 254 {
-                        out.push(255);
-                        self.next
-                            .get_or_insert_with(Default::default)
-                            .insert(values_buf, data, out)
-                    } else {
-                        out.push(slots_len + 2);
-                        let value = values_buf.insert(data);
-                        self.slots.push(Slot { value, child: None });
-                    }
-                } else {
-                    // Find insertion point
-                    match self
-                        .slots
-                        .binary_search_by(|slot| values_buf[slot.value].cmp(data))
-                    {
-                        Ok(_) => unreachable!("value already exists"),
-                        Err(idx) => {
-                            out.push(idx as u8 + 1);
-                            self.slots[idx]
-                                .child
+                match values_buf[slot.value].cmp(data) {
+                    Ordering::Less => {
+                        if slots_len == 254 {
+                            out.push(255);
+                            self.next
                                 .get_or_insert_with(Default::default)
-                                .insert(values_buf, data, out)
+                                .try_insert(values_buf, data, out)
+                        } else {
+                            out.push(slots_len + 2);
+                            let value = values_buf.insert(data);
+                            self.slots.push(Slot { value, child: None });
+                            Ok(value)
+                        }
+                    }
+                    Ordering::Equal => Err(slot.value),
+                    Ordering::Greater => {
+                        // Find insertion point
+                        match self
+                            .slots
+                            .binary_search_by(|slot| values_buf[slot.value].cmp(data))
+                        {
+                            Ok(idx) => Err(self.slots[idx].value),
+                            Err(idx) => {
+                                out.push(idx as u8 + 1);
+                                self.slots[idx]
+                                    .child
+                                    .get_or_insert_with(Default::default)
+                                    .try_insert(values_buf, data, out)
+                            }
                         }
                     }
                 }
@@ -320,7 +294,8 @@ impl Bucket {
             None => {
                 out.push(2);
                 let value = values_buf.insert(data);
-                self.slots.push(Slot { value, child: None })
+                self.slots.push(Slot { value, child: None });
+                Ok(value)
             }
         }
     }
