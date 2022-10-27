@@ -65,11 +65,17 @@ fn add_benchmark(c: &mut Criterion) {
     let string = create_string_array_with_len::<i32>(1024, 0., 20);
     let string_opt = create_string_array_with_len::<i32>(1024, 0.5, 20);
 
+    let values = create_string_array_with_len::<i32>(10, 0., 20);
+    let dict = create_dict_from_values::<Int32Type>(1024, 0., &values);
+    let dict_opt = create_dict_from_values::<Int32Type>(1024, 0.5, &values);
+
     let cases: &[(&str, &dyn Array)] = &[
         ("i32(0.0)", &i32),
         ("i32(0.5)", &i32_opt),
         ("str(20, 0.0)", &string),
         ("str(20, 0.5)", &string_opt),
+        ("dict(10, 0.0, str(20, 0.0))", &dict),
+        ("dict(10, 0.5, str(20, 0.0)", &dict_opt),
     ];
 
     for (prefix, base) in cases {
