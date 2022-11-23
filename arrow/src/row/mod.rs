@@ -480,6 +480,100 @@ impl RowConverter {
             })
             .collect()
     }
+
+    /// Creates a [`Row`] from the raw bytes of a [`Row`] created by this [`RowConverter`]
+    ///
+    /// This can be used to implement spilling to disk
+    ///
+    /// ```
+    /// # use std::fs::File;
+    /// # use std::io::{Error, BufWriter, Write, Result, BufReader, Read, Seek, SeekFrom, ErrorKind};
+    /// # use std::sync::Arc;
+    /// # use arrow::row::{Row, RowConverter, Rows, SortField};
+    /// # use arrow_array::{ArrayRef, Float64Array, Int32Array};
+    /// # use arrow_schema::DataType;
+    /// struct Spilled {
+    ///     buf: Vec<u8>,
+    ///     reader: BufReader<File>,
+    ///     remaining_rows: usize,
+    /// }
+    ///
+    /// impl Spilled {
+    ///     fn new(rows: &Rows) -> Result<Self> {
+    ///         let mut file = tempfile::tempfile().unwrap();
+    ///         let mut writer = BufWriter::new(&mut file);
+    ///         for row in 0..rows.num_rows() {
+    ///             let row = rows.row(row);
+    ///             let data = row.as_ref();
+    ///             writer.write(&(data.len() as u32).to_le_bytes())?;
+    ///             writer.write(data)?;
+    ///         }
+    ///         writer.flush()?;
+    ///         drop(writer);
+    ///
+    ///         file.rewind()?;
+    ///         let reader = BufReader::new(file);
+    ///
+    ///         Ok(Self {
+    ///             buf: vec![],
+    ///             reader,
+    ///             remaining_rows: rows.num_rows(),
+    ///         })
+    ///     }
+    ///
+    ///     //// Read the next row from the file, potentially performing IO to fetch a block of bytes
+    ///     fn next(&mut self) -> Option<Result<&[u8]>> {
+    ///         (self.remaining_rows != 0).then(|| {
+    ///             let mut t = [0; 4];
+    ///             self.reader.read_exact(&mut t)?;
+    ///             let row_len = u32::from_le_bytes(t) as usize;
+    ///             self.buf.clear();
+    ///             let actual = (&mut self.reader)
+    ///                 .take(row_len as _)
+    ///                 .read_to_end(&mut self.buf)?;
+    ///             if actual != row_len {
+    ///                 return Err(Error::new(ErrorKind::UnexpectedEof, "truncated row"));
+    ///             }
+    ///
+    ///             Ok(self.buf.as_slice())
+    ///         })
+    ///     }
+    /// }
+    ///
+    /// let a1 = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])) as ArrayRef;
+    /// let a2 = Arc::new(Float64Array::from(vec![5., 3., 4., 4., 5.])) as ArrayRef;
+    ///
+    /// let mut converter = RowConverter::new(vec![
+    ///     SortField::new(DataType::Int32),
+    ///     SortField::new(DataType::Float64),
+    /// ])
+    /// .unwrap();
+    ///
+    /// let rows = converter.convert_columns(&[a1, a2]).unwrap();
+    ///
+    /// let mut loader = Spilled::new(&rows).unwrap();
+    /// for expected in &rows {
+    ///     let data = loader.next().unwrap().unwrap();
+    ///     /// SAFETY
+    ///     /// Not modified file, reading bytes of rows from converter
+    ///     let actual = unsafe { converter.row_from_bytes(data) };
+    ///     assert_eq!(actual, expected)
+    /// }
+    /// ```
+    ///
+    /// This MUST NOT be used for interprocess communication, as not only does [`RowConverter`]
+    /// contain state necessary to interpret the encoded data, but the row format encoding
+    /// is not stable
+    ///
+    /// # Safety
+    ///
+    /// `data` must be the bytes of a [`Row`] created by this [`RowConverter`]
+    pub unsafe fn row_from_bytes<'a>(&'a self, data: &'a [u8]) -> Row<'a> {
+        Row {
+            data,
+            fields: &self.fields,
+        }
+    }
 }
 
 /// A row-oriented representation of arrow data, that is normalized for comparison.
