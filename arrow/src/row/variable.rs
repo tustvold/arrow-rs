@@ -207,11 +207,7 @@ pub fn decode_binary<I: OffsetSizeTrait>(
 }
 
 /// Decodes a string array from `rows` with the provided `options`
-///
-/// # Safety
-///
-/// The row must contain valid UTF-8 data
-pub unsafe fn decode_string<I: OffsetSizeTrait>(
+pub fn decode_string<I: OffsetSizeTrait>(
     rows: &mut [&[u8]],
     options: SortOptions,
 ) -> GenericStringArray<I> {
@@ -220,12 +216,22 @@ pub unsafe fn decode_string<I: OffsetSizeTrait>(
         false => DataType::Utf8,
     };
 
-    let builder = decode_binary::<I>(rows, options)
-        .into_data()
+    let data = decode_binary::<I>(rows, options).into_data();
+
+    // Validate data is UTF-8
+    let offsets = data.buffer::<I>(0);
+    let values = data.buffers()[1].as_slice();
+
+    let validated = std::str::from_utf8(values).unwrap();
+    for offset in offsets.iter().skip(1).take(offsets.len() - 2) {
+        assert!(validated.is_char_boundary(offset.as_usize()))
+    }
+
+    let builder = data
         .into_builder()
         .data_type(d);
 
     // SAFETY:
-    // Row data must have come from a valid UTF-8 array
-    GenericStringArray::from(builder.build_unchecked())
+    // Validated UTF-8 data
+    GenericStringArray::from(unsafe { builder.build_unchecked() })
 }
