@@ -26,6 +26,11 @@ use arrow_buffer::{ArrowNativeType, Buffer};
 use arrow_data::ArrayDataBuilder;
 use arrow_schema::DataType as ArrowType;
 
+#[cfg(feature = "simdutf8")]
+use simdutf8::basic::from_utf8;
+#[cfg(not(feature = "simdutf8"))]
+use std::str::from_utf8;
+
 /// A buffer of variable-sized byte arrays that can be converted into
 /// a corresponding [`ArrayRef`]
 #[derive(Debug)]
@@ -120,7 +125,7 @@ impl<I: OffsetSizeTrait + ScalarValue> OffsetBuffer<I> {
     ///
     /// [`Self::try_push`] can perform this validation check on insertion
     pub fn check_valid_utf8(&self, start_offset: usize) -> Result<()> {
-        match std::str::from_utf8(&self.values.as_slice()[start_offset..]) {
+        match from_utf8(&self.values.as_slice()[start_offset..]) {
             Ok(_) => Ok(()),
             Err(e) => Err(general_err!("encountered non UTF-8 data: {}", e)),
         }
@@ -329,11 +334,11 @@ mod tests {
     #[test]
     fn test_utf8_validation() {
         let valid_2_byte_utf8 = &[0b11001000, 0b10001000];
-        std::str::from_utf8(valid_2_byte_utf8).unwrap();
+        from_utf8(valid_2_byte_utf8).unwrap();
         let valid_3_byte_utf8 = &[0b11101000, 0b10001000, 0b10001000];
-        std::str::from_utf8(valid_3_byte_utf8).unwrap();
+        from_utf8(valid_3_byte_utf8).unwrap();
         let valid_4_byte_utf8 = &[0b11110010, 0b10101000, 0b10101001, 0b10100101];
-        std::str::from_utf8(valid_4_byte_utf8).unwrap();
+        from_utf8(valid_4_byte_utf8).unwrap();
 
         let mut buffer = OffsetBuffer::<i32>::default();
         buffer.try_push(valid_2_byte_utf8, true).unwrap();
