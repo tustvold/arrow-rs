@@ -528,12 +528,9 @@ impl ArrayData {
     /// * the datatype is `Boolean` (it corresponds to a bit-packed buffer where the offset is not applicable)
     #[inline]
     pub fn buffer<T: ArrowNativeType>(&self, buffer: usize) -> &[T] {
-        let values = unsafe { self.buffers[buffer].as_slice().align_to::<T>() };
-        if !values.0.is_empty() || !values.2.is_empty() {
-            panic!("The buffer is not byte-aligned with its interpretation")
-        };
+        let values: &[T] = self.buffers[buffer].typed_data();
         assert_ne!(self.data_type, DataType::Boolean);
-        &values.1[self.offset..]
+        &values[self.offset..]
     }
 
     /// Returns a new empty [ArrayData] valid for `data_type`.
@@ -744,7 +741,7 @@ impl ArrayData {
     }
 
     /// Returns a reference to the data in `buffers[idx]` as a typed slice after validating
-    fn typed_buffer<T: ArrowNativeType + num::Num>(
+    fn typed_buffer<T: ArrowNativeType>(
         &self,
         idx: usize,
         len: usize,

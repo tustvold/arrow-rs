@@ -15,35 +15,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::mem::size_of;
+use arrow_buffer::ArrowNativeType;
 
 use crate::data::{contains_nulls, ArrayData};
 use arrow_buffer::bit_util::get_bit;
 
-use super::utils::equal_len;
-
-pub(super) fn primitive_equal<T>(
+pub(super) fn primitive_equal<T: ArrowNativeType>(
     lhs: &ArrayData,
     rhs: &ArrayData,
     lhs_start: usize,
     rhs_start: usize,
     len: usize,
 ) -> bool {
-    let byte_width = size_of::<T>();
-    let lhs_values = &lhs.buffers()[0].as_slice()[lhs.offset() * byte_width..];
-    let rhs_values = &rhs.buffers()[0].as_slice()[rhs.offset() * byte_width..];
+    let lhs_values = &lhs.buffer::<T>(0)[lhs_start..lhs_start + len];
+    let rhs_values = &rhs.buffer::<T>(0)[rhs_start..rhs_start + len];
 
     // Only checking one null mask here because by the time the control flow reaches
     // this point, the equality of the two masks would have already been verified.
     if !contains_nulls(lhs.null_buffer(), lhs_start + lhs.offset(), len) {
         // without nulls, we just need to compare slices
-        equal_len(
-            lhs_values,
-            rhs_values,
-            lhs_start * byte_width,
-            rhs_start * byte_width,
-            len * byte_width,
-        )
+        lhs_values == rhs_values
     } else {
         // get a ref of the null buffer bytes, to use in testing for nullness
         let lhs_null_bytes = lhs.null_buffer().as_ref().unwrap().as_slice();
@@ -55,15 +46,7 @@ pub(super) fn primitive_equal<T>(
             let lhs_is_null = !get_bit(lhs_null_bytes, lhs_pos + lhs.offset());
             let rhs_is_null = !get_bit(rhs_null_bytes, rhs_pos + rhs.offset());
 
-            lhs_is_null
-                || (lhs_is_null == rhs_is_null)
-                    && equal_len(
-                        lhs_values,
-                        rhs_values,
-                        lhs_pos * byte_width,
-                        rhs_pos * byte_width,
-                        byte_width, // 1 * byte_width since we are comparing a single entry
-                    )
+            lhs_is_null || (lhs_is_null == rhs_is_null) && lhs_values[i] == rhs_values[i]
         })
     }
 }
