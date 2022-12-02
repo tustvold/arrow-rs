@@ -514,14 +514,7 @@ impl<T: ArrowPrimitiveType> PrimitiveArray<T> {
         let null_count = array.null_count();
 
         if null_count == 0 {
-            let values = (0..len).map(|idx| op(unsafe { array.value_unchecked(idx) }));
-            // JUSTIFICATION
-            //  Benefit
-            //      ~60% speedup
-            //  Soundness
-            //      `values` is an iterator with a known size because arrays are sized.
-            let buffer = unsafe { Buffer::try_from_trusted_len_iter(values)? };
-            return Ok(unsafe { build_primitive_array(len, buffer, 0, None) });
+            return Self::try_from_unary_no_nulls(array, op);
         }
 
         let null_buffer = data.null_buffer().map(|b| b.bit_slice(data.offset(), len));
@@ -537,6 +530,25 @@ impl<T: ArrowPrimitiveType> PrimitiveArray<T> {
         Ok(unsafe {
             build_primitive_array(len, buffer.finish(), null_count, null_buffer)
         })
+    }
+
+    #[inline(never)]
+    fn try_from_unary_no_nulls<A, F, E>(array: A, op: F) -> Result<Self, E>
+    where
+        A: ArrayAccessor,
+        F: Fn(A::Item) -> Result<T::Native, E>,
+    {
+        // JUSTIFICATION
+        //  Benefit
+        //      ~60% speedup
+        //  Soundness
+        //      `values` is an iterator with a known size because arrays are sized.
+        unsafe {
+            let buffer = Buffer::try_from_trusted_len_iter(
+                (0..array.len()).map(|idx| op(array.value_unchecked(idx))),
+            )?;
+            Ok(build_primitive_array(array.len(), buffer, 0, None))
+        }
     }
 
     /// Applies an unary and fallible function to all valid values in a mutable primitive array.
