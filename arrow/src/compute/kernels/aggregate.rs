@@ -375,7 +375,7 @@ where
                 array.len(),
                 array.offset(),
                 null_count,
-                Some(buffer.deref()),
+                buffer,
                 |idx| {
                     unsafe { sum = sum.add_checked(array.value_unchecked(idx))? };
                     Ok::<_, ArrowError>(())

@@ -173,29 +173,25 @@ impl<'a> Iterator for BitIndexIterator<'a> {
 /// As such this is the next best option
 ///
 /// [not possible]: https://github.com/rust-lang/rust/issues/69595
-#[inline]
 pub fn try_for_each_valid_idx<E, F: FnMut(usize) -> Result<(), E>>(
     len: usize,
     offset: usize,
     null_count: usize,
-    nulls: Option<&[u8]>,
+    nulls: &[u8],
     f: F,
 ) -> Result<(), E> {
     let valid_count = len - null_count;
+    if valid_count == 0 {
+        return Ok(());
+    }
 
-    if valid_count == len {
-        (0..len).try_for_each(f)
-    } else if null_count != len {
-        let selectivity = valid_count as f64 / len as f64;
-        if selectivity > 0.8 {
-            BitSliceIterator::new(nulls.unwrap(), offset, len)
-                .flat_map(|(start, end)| start..end)
-                .try_for_each(f)
-        } else {
-            BitIndexIterator::new(nulls.unwrap(), offset, len).try_for_each(f)
-        }
+    let selectivity = valid_count as f64 / len as f64;
+    if selectivity > 0.8 {
+        BitSliceIterator::new(nulls, offset, len)
+            .flat_map(|(start, end)| start..end)
+            .try_for_each(f)
     } else {
-        Ok(())
+        BitIndexIterator::new(nulls, offset, len).try_for_each(f)
     }
 }
 

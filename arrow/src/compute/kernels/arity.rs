@@ -333,18 +333,14 @@ where
     if a.null_count() == 0 && b.null_count() == 0 {
         try_binary_no_nulls(len, a, b, op)
     } else {
-        let null_buffer = combine_option_bitmap(&[a.data(), b.data()], len);
-
-        let null_count = null_buffer
-            .as_ref()
-            .map(|x| len - x.count_set_bits_offset(0, len))
-            .unwrap_or_default();
+        let null_buffer = combine_option_bitmap(&[a.data(), b.data()], len).unwrap();
+        let null_count = len - null_buffer.count_set_bits_offset(0, len);
 
         let mut buffer = BufferBuilder::<O::Native>::new(len);
         buffer.append_n_zeroed(len);
         let slice = buffer.as_slice_mut();
 
-        try_for_each_valid_idx(len, 0, null_count, null_buffer.as_deref(), |idx| {
+        try_for_each_valid_idx(len, 0, null_count, &null_buffer, |idx| {
             unsafe {
                 *slice.get_unchecked_mut(idx) =
                     op(a.value_unchecked(idx), b.value_unchecked(idx))?
@@ -353,7 +349,7 @@ where
         })?;
 
         Ok(unsafe {
-            build_primitive_array(len, buffer.finish(), null_count, null_buffer)
+            build_primitive_array(len, buffer.finish(), null_count, Some(null_buffer))
         })
     }
 }
@@ -401,17 +397,14 @@ where
     if a.null_count() == 0 && b.null_count() == 0 {
         try_binary_no_nulls_mut(len, a, b, op)
     } else {
-        let null_buffer = combine_option_bitmap(&[a.data(), b.data()], len);
-        let null_count = null_buffer
-            .as_ref()
-            .map(|x| len - x.count_set_bits_offset(0, len))
-            .unwrap_or_default();
+        let null_buffer = combine_option_bitmap(&[a.data(), b.data()], len).unwrap();
+        let null_count = len - null_buffer.count_set_bits_offset(0, len);
 
         let mut builder = a.into_builder()?;
 
         let slice = builder.values_slice_mut();
 
-        match try_for_each_valid_idx(len, 0, null_count, null_buffer.as_deref(), |idx| {
+        match try_for_each_valid_idx(len, 0, null_count, &null_buffer, |idx| {
             unsafe {
                 *slice.get_unchecked_mut(idx) =
                     op(*slice.get_unchecked(idx), b.value_unchecked(idx))?
@@ -427,7 +420,7 @@ where
             .data()
             .clone()
             .into_builder()
-            .null_bit_buffer(null_buffer)
+            .null_bit_buffer(Some(null_buffer))
             .null_count(null_count);
 
         let array_data = unsafe { array_builder.build_unchecked() };

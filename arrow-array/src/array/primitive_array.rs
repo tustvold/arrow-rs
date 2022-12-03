@@ -490,7 +490,7 @@ impl<T: ArrowPrimitiveType> PrimitiveArray<T> {
             return Ok(unsafe { build_primitive_array(len, buffer, 0, None) });
         }
 
-        let null_buffer = data.null_buffer().map(|b| b.bit_slice(data.offset(), len));
+        let null_buffer = data.null_buffer().unwrap().bit_slice(data.offset(), len);
         let mut buffer = BufferBuilder::<O::Native>::new(len);
         buffer.append_n_zeroed(len);
         let slice = buffer.as_slice_mut();
@@ -531,11 +531,19 @@ impl<T: ArrowPrimitiveType> PrimitiveArray<T> {
         let mut builder = self.into_builder()?;
 
         let (slice, null_buffer) = builder.slices_mut();
+        let result = if null_count == 0 {
+            slice.iter_mut().try_for_each(|x| {
+                s = op(x)?;
+                Ok(())
+            })
+        } else {
+            try_for_each_valid_idx(len, 0, null_count, null_buffer.unwrap(), |idx| {
+                unsafe { *slice.get_unchecked_mut(idx) = op(*slice.get_unchecked(idx))? };
+                Ok::<_, E>(())
+            })
+        };
 
-        match try_for_each_valid_idx(len, 0, null_count, null_buffer.as_deref(), |idx| {
-            unsafe { *slice.get_unchecked_mut(idx) = op(*slice.get_unchecked(idx))? };
-            Ok::<_, E>(())
-        }) {
+        match result {
             Ok(_) => {}
             Err(err) => return Ok(Err(err)),
         };
