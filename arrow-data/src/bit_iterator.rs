@@ -184,7 +184,7 @@ pub fn try_for_each_valid_idx<E, F: FnMut(usize) -> Result<(), E>>(
     let valid_count = len - null_count;
 
     if valid_count == len {
-        (0..len).try_for_each(f)
+        try_for_each_valid_idx_no_nulls(len, f)
     } else if null_count != len {
         let selectivity = valid_count as f64 / len as f64;
         if selectivity > 0.8 {
@@ -197,6 +197,15 @@ pub fn try_for_each_valid_idx<E, F: FnMut(usize) -> Result<(), E>>(
     } else {
         Ok(())
     }
+}
+
+/// This intentional inline(never) attribute helps LLVM optimize the loop.
+#[inline(never)]
+fn try_for_each_valid_idx_no_nulls<E, F: FnMut(usize) -> Result<(), E>>(
+    len: usize,
+    f: F,
+) -> Result<(), E> {
+    (0..len).try_for_each(f)
 }
 
 // Note: tests located in filter module

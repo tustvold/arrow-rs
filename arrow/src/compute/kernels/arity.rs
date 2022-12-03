@@ -330,32 +330,26 @@ where
     }
     let len = a.len();
 
-    if a.null_count() == 0 && b.null_count() == 0 {
-        try_binary_no_nulls(len, a, b, op)
-    } else {
-        let null_buffer = combine_option_bitmap(&[a.data(), b.data()], len).unwrap();
+    let null_buffer = combine_option_bitmap(&[a.data(), b.data()], len).unwrap();
 
-        let null_count = null_buffer
-            .as_ref()
-            .map(|x| len - x.count_set_bits_offset(0, len))
-            .unwrap_or_default();
+    let null_count = null_buffer
+        .as_ref()
+        .map(|x| len - x.count_set_bits_offset(0, len))
+        .unwrap_or_default();
 
-        let mut buffer = BufferBuilder::<O::Native>::new(len);
-        buffer.append_n_zeroed(len);
-        let slice = buffer.as_slice_mut();
+    let mut buffer = BufferBuilder::<O::Native>::new(len);
+    buffer.append_n_zeroed(len);
+    let slice = buffer.as_slice_mut();
 
-        try_for_each_valid_idx(len, 0, null_count, null_buffer.as_deref(), |idx| {
-            unsafe {
-                *slice.get_unchecked_mut(idx) =
-                    op(a.value_unchecked(idx), b.value_unchecked(idx))?
-            };
-            Ok::<_, ArrowError>(())
-        })?;
+    try_for_each_valid_idx(len, 0, null_count, null_buffer.as_deref(), |idx| {
+        unsafe {
+            *slice.get_unchecked_mut(idx) =
+                op(a.value_unchecked(idx), b.value_unchecked(idx))?
+        };
+        Ok::<_, ArrowError>(())
+    })?;
 
-        Ok(unsafe {
-            build_primitive_array(len, buffer.finish(), null_count, null_buffer)
-        })
-    }
+    Ok(unsafe { build_primitive_array(len, buffer.finish(), null_count, null_buffer) })
 }
 
 /// Applies the provided fallible binary operation across `a` and `b` by mutating the mutable
@@ -398,41 +392,39 @@ where
         ))));
     }
 
-    if a.null_count() == 0 && b.null_count() == 0 {
-        try_binary_no_nulls_mut(len, a, b, op)
-    } else {
-        let null_buffer = combine_option_bitmap(&[a.data(), b.data()], len).unwrap();
-        let null_count = null_buffer
-            .as_ref()
-            .map(|x| len - x.count_set_bits_offset(0, len))
-            .unwrap_or_default();
+    let null_buffer = combine_option_bitmap(&[a.data(), b.data()], len).unwrap();
+    let null_count = null_buffer
+        .as_ref()
+        .map(|x| len - x.count_set_bits_offset(0, len))
+        .unwrap_or_default();
 
-        let mut builder = a.into_builder()?;
+    let mut builder = a.into_builder()?;
 
-        let slice = builder.values_slice_mut();
+    let slice = builder.values_slice_mut();
 
-        match try_for_each_valid_idx(len, 0, null_count, null_buffer.as_deref(), |idx| {
+    let result =
+        try_for_each_valid_idx(len, 0, null_count, null_buffer.as_deref(), |idx| {
             unsafe {
                 *slice.get_unchecked_mut(idx) =
                     op(*slice.get_unchecked(idx), b.value_unchecked(idx))?
             };
             Ok::<_, ArrowError>(())
-        }) {
-            Ok(_) => {}
-            Err(err) => return Ok(Err(err)),
-        };
+        });
 
-        let array_builder = builder
-            .finish()
-            .data()
-            .clone()
-            .into_builder()
-            .null_bit_buffer(null_buffer)
-            .null_count(null_count);
-
-        let array_data = unsafe { array_builder.build_unchecked() };
-        Ok(Ok(PrimitiveArray::<T>::from(array_data)))
+    if let Err(err) = result {
+        return Ok(Err(err));
     }
+
+    let array_builder = builder
+        .finish()
+        .data()
+        .clone()
+        .into_builder()
+        .null_bit_buffer(null_buffer)
+        .null_count(null_count);
+
+    let array_data = unsafe { array_builder.build_unchecked() };
+    Ok(Ok(PrimitiveArray::<T>::from(array_data)))
 }
 
 /// This intentional inline(never) attribute helps LLVM optimize the loop.
