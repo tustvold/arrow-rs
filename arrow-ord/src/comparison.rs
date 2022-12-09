@@ -103,36 +103,10 @@ pub fn eq_utf8<OffsetSize: OffsetSizeTrait>(
 
 fn utf8_empty<OffsetSize: OffsetSizeTrait, const EQ: bool>(
     left: &GenericStringArray<OffsetSize>,
-) -> Result<BooleanArray, ArrowError> {
-    let null_bit_buffer = left
-        .data()
-        .null_buffer()
-        .map(|b| b.bit_slice(left.offset(), left.len()));
-
-    let buffer = unsafe {
-        MutableBuffer::from_trusted_len_iter_bool(left.value_offsets().windows(2).map(
-            |offset| {
-                if EQ {
-                    offset[1].as_usize() == offset[0].as_usize()
-                } else {
-                    offset[1].as_usize() > offset[0].as_usize()
-                }
-            },
-        ))
-    };
-
-    let data = unsafe {
-        ArrayData::new_unchecked(
-            DataType::Boolean,
-            left.len(),
-            None,
-            null_bit_buffer,
-            0,
-            vec![Buffer::from(buffer)],
-            vec![],
-        )
-    };
-    Ok(BooleanArray::from(data))
+) -> BooleanArray {
+    BooleanArray::from_unary(left, |item|{
+        item.is_empty() == EQ
+    })
 }
 
 /// Perform `left == right` operation on [`StringArray`] / [`LargeStringArray`] and a scalar.
@@ -141,7 +115,7 @@ pub fn eq_utf8_scalar<OffsetSize: OffsetSizeTrait>(
     right: &str,
 ) -> Result<BooleanArray, ArrowError> {
     if right.is_empty() {
-        return utf8_empty::<_, true>(left);
+        return Ok(utf8_empty::<_, true>(left));
     }
     compare_op_scalar(left, |a| a == right)
 }
@@ -376,7 +350,7 @@ pub fn neq_utf8_scalar<OffsetSize: OffsetSizeTrait>(
     right: &str,
 ) -> Result<BooleanArray, ArrowError> {
     if right.is_empty() {
-        return utf8_empty::<_, false>(left);
+        return Ok(utf8_empty::<_, false>(left));
     }
     compare_op_scalar(left, |a| a != right)
 }
