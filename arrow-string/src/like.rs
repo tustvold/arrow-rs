@@ -588,11 +588,15 @@ fn ilike_scalar_op<'a, F: Fn(bool) -> bool, L: ArrayAccessor<Item = &'a str>>(
     right: &str,
     op: F,
 ) -> Result<BooleanArray, ArrowError> {
+    let right = right.to_uppercase();
     // If not ASCII faster to use case insensitive regex than allocating using to_uppercase
     if right.is_ascii() {
         if !right.contains(is_like_pattern) {
             return Ok(BooleanArray::from_unary(left, |item| {
-                op(item.eq_ignore_ascii_case(right))
+                match item.is_ascii() {
+                    true => op(item.eq_ignore_ascii_case(&right)),
+                    false => op(item.to_uppercase() == right),
+                }
             }));
         } else if right.ends_with('%')
             && !right.ends_with("\\%")
@@ -602,23 +606,25 @@ fn ilike_scalar_op<'a, F: Fn(bool) -> bool, L: ArrayAccessor<Item = &'a str>>(
             let start_str = &right[..right.len() - 1];
             return Ok(BooleanArray::from_unary(left, |item| {
                 let end = item.len().min(start_str.len());
-                let result = item.is_char_boundary(end)
-                    && start_str.eq_ignore_ascii_case(&item[..end]);
-                op(result)
+                match item.is_ascii() {
+                    true => op(start_str.eq_ignore_ascii_case(&item[..end])),
+                    false => op(item.to_uppercase().starts_with(start_str)),
+                }
             }));
         } else if right.starts_with('%') && !right[1..].contains(is_like_pattern) {
             // fast path, can use ends_with
             let ends_str = &right[1..];
             return Ok(BooleanArray::from_unary(left, |item| {
                 let start = item.len().saturating_sub(ends_str.len());
-                let result = item.is_char_boundary(start)
-                    && ends_str.eq_ignore_ascii_case(&item[start..]);
-                op(result)
+                match item.is_ascii() {
+                    true => op(ends_str.eq_ignore_ascii_case(&item[start..])),
+                    false => op(item.to_uppercase().ends_with(ends_str)),
+                }
             }));
         }
     }
 
-    let re_pattern = replace_like_wildcards(right)?;
+    let re_pattern = replace_like_wildcards(&right)?;
     let re = Regex::new(&format!("(?i)^{}$", re_pattern)).map_err(|e| {
         ArrowError::ComputeError(format!(
             "Unable to build regex from ILIKE pattern: {}",
@@ -1352,6 +1358,16 @@ mod tests {
         ilike_utf8_scalar,
         ilike_utf8_scalar_dyn,
         vec![true, false, false, false]
+    );
+
+    test_utf8_scalar!(
+        test_utf8_array_ilike_unicode,
+        test_utf8_array_ilike_unicode_dyn,
+        vec!["Fooß"],
+        "FooSS",
+        ilike_utf8_scalar,
+        ilike_utf8_scalar_dyn,
+        vec![true]
     );
 
     test_utf8_scalar!(
