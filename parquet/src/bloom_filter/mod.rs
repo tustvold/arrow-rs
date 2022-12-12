@@ -192,6 +192,20 @@ impl Sbbf {
     }
 
     /// Write the bitset in serialized form to the writer.
+    #[cfg(target_endian = "little")]
+    fn write_bitset<W: Write>(&self, mut writer: W) -> Result<(), ParquetError> {
+        let (prefix, v, suffix) = unsafe { self.0.as_slice().align_to::<u8>() };
+        assert!(prefix.is_empty() && suffix.is_empty());
+        writer.write_all(v).map_err(|e| {
+            ParquetError::General(format!(
+                "Could not write bloom filter bit set: {}",
+                e
+            ))
+        })
+    }
+
+    /// Write the bitset in serialized form to the writer.
+    #[cfg(not(target_endian = "little"))]
     fn write_bitset<W: Write>(&self, mut writer: W) -> Result<(), ParquetError> {
         for block in &self.0 {
             for word in block {
