@@ -25,14 +25,8 @@ use arrow_array::types::*;
 use arrow_array::{downcast_integer, make_array, RecordBatch, RecordBatchReader};
 use arrow_data::ArrayData;
 use arrow_schema::{ArrowError, DataType, SchemaRef};
-use serde_json::value::RawValue;
-use std::io::{BufRead, Read};
-
-/// The average length of a field in bytes, this is used to estimate how much to read
-const AVERAGE_FIELD_SIZE: usize = 8;
-
-/// The smallest number of bytes to read from the underlying [`Read`]
-const MIN_READ_SIZE: usize = 4 * 1024;
+use std::borrow::Cow;
+use std::io::BufRead;
 
 mod boolean_array;
 mod primitive_array;
@@ -49,8 +43,6 @@ pub struct RawReaderBuilder {
 impl RawReaderBuilder {
     /// Create a new [`RawReaderBuilder`] with the provided [`SchemaRef`]
     ///
-    /// Any columns not present in `schema` will be ignored
-    ///
     /// This could be obtained using [`infer_json_schema`] if not known
     ///
     /// [`infer_json_schema`]: crate::reader::infer_json_schema
@@ -66,27 +58,18 @@ impl RawReaderBuilder {
         Self { batch_size, ..self }
     }
 
-    /// Create with the provided [`Read`]
-    pub fn build<R: Read>(self, reader: R) -> Result<RawReader<R>, ArrowError> {
-        let decoder = make_decoder(DataType::Struct(self.schema.fields.clone()))?;
-
-        let row_len: usize = self
-            .schema
-            .fields
-            .iter()
-            .map(|x| x.name().len() + AVERAGE_FIELD_SIZE)
-            .sum();
-
-        let estimated_batch_size_bytes = (row_len * self.batch_size).min(MIN_READ_SIZE);
+    /// Create with the provided [`BufRead`]
+    pub fn build<R: BufRead>(self, reader: R) -> Result<RawReader<R>, ArrowError> {
+        let decoder = make_decoder(
+            DataType::Struct(self.schema.fields.clone()),
+            self.batch_size,
+        )?;
 
         Ok(RawReader {
             reader,
             decoder,
-            estimated_batch_size_bytes,
             schema: self.schema,
             batch_size: self.batch_size,
-            end_offsets: Vec::with_capacity(self.batch_size),
-            buffer: Vec::with_capacity(estimated_batch_size_bytes),
         })
     }
 }
@@ -105,12 +88,6 @@ pub struct RawReader<R> {
     batch_size: usize,
     decoder: Box<dyn ArrayDecoder>,
     schema: SchemaRef,
-
-    /// The estimated size of a batch in bytes
-    estimated_batch_size_bytes: usize,
-
-    end_offsets: Vec<usize>,
-    buffer: Vec<u8>,
 }
 
 impl<R> std::fmt::Debug for RawReader<R> {
@@ -122,89 +99,76 @@ impl<R> std::fmt::Debug for RawReader<R> {
     }
 }
 
-impl<R: Read> RawReader<R> {
-    /// Return the number of bytes to read from the underlying reader
-    fn fetch_size(&self) -> usize {
-        self.estimated_batch_size_bytes
-            .saturating_sub(self.buffer.len())
-            .max(MIN_READ_SIZE)
-    }
+fn delimit_rows(buf: &[u8], end_offsets: &mut Vec<usize>, to_read: usize) {
+    let mut has_non_whitespace = false;
 
-    /// Populates the buffers with up to `to_read` values
-    fn fill_buf(&mut self, to_read: usize) -> Result<(), ArrowError> {
-        assert_ne!(to_read, 0);
-        self.end_offsets.clear();
-        self.end_offsets.reserve(to_read);
+    for (idx, b) in buf.iter().enumerate() {
+        match b {
+            b'\n' if has_non_whitespace => {
+                end_offsets.push(idx);
+                has_non_whitespace = false;
 
-        let mut eof = false;
-        let mut has_non_whitespace = false;
-
-        let mut offset = 0;
-        loop {
-            if offset == self.buffer.len() {
-                // Need to read more data to buffer
-                let fetch_size = self.fetch_size();
-                let read = (&mut self.reader)
-                    .take(fetch_size as u64)
-                    .read_to_end(&mut self.buffer)?;
-                eof = read != fetch_size;
-            }
-
-            while offset < self.buffer.len() {
-                match self.buffer[offset] {
-                    b'\n' if has_non_whitespace => {
-                        self.end_offsets.push(offset);
-                        has_non_whitespace = false;
-
-                        if self.end_offsets.len() == to_read {
-                            return Ok(());
-                        }
-                    }
-                    b => has_non_whitespace |= !b.is_ascii_whitespace(),
+                if end_offsets.len() >= to_read {
+                    return;
                 }
-
-                offset += 1;
             }
-
-            if eof {
-                if has_non_whitespace {
-                    self.end_offsets.push(offset);
-                }
-                return Ok(());
-            }
+            b => has_non_whitespace |= !b.is_ascii_whitespace(),
         }
     }
+}
 
+impl<R: BufRead> RawReader<R> {
     /// Reads the next [`RecordBatch`] returning `Ok(None)` if EOF
     fn read(&mut self) -> Result<Option<RecordBatch>, ArrowError> {
-        self.fill_buf(self.batch_size)?;
-        if self.end_offsets.is_empty() {
-            return Ok(None);
+        let mut read = 0;
+        let mut temporary = Vec::with_capacity(128);
+        let mut end_offsets = Vec::with_capacity(self.batch_size);
+        while read < self.batch_size {
+            let buf = self.reader.fill_buf()?;
+            if buf.is_empty() {
+                if !temporary.is_empty() {
+                    let s = std::str::from_utf8(&temporary).expect("TODO");
+                    self.decoder.visit(s)?;
+                    read += 1;
+                }
+                break;
+            }
+
+            end_offsets.clear();
+            delimit_rows(buf, &mut end_offsets, self.batch_size - read);
+
+            if end_offsets.is_empty() {
+                // Need to read more data
+                temporary.extend_from_slice(buf);
+                let consumed = buf.len();
+                self.reader.consume(consumed);
+                continue;
+            }
+
+            read += end_offsets.len();
+            let last_offset = *end_offsets.last().unwrap();
+            let s = std::str::from_utf8(&buf[..last_offset]).expect("TODO");
+            let mut start_offset = 0;
+            for end_offset in end_offsets.iter().copied() {
+                let visited = self.decoder.visit(&s[start_offset..end_offset])?;
+                if s[start_offset + visited..end_offset]
+                    .contains(|c: char| c.is_whitespace())
+                {
+                    panic!("TODO")
+                }
+                start_offset = end_offset;
+            }
+            self.reader.consume(last_offset);
         }
 
-        let last_offset = *self.end_offsets.last().unwrap();
-        let buf = to_str(&self.buffer[..last_offset])?;
-
-        let mut start_offset = 0;
-
-        let mut values = Vec::with_capacity(self.end_offsets.len());
-        for end_offset in &self.end_offsets {
-            let s = buf.get(start_offset..*end_offset).ok_or_else(utf8_err)?;
-            start_offset = end_offset + 1;
-            values.push(Some(to_raw_value(s)?));
-        }
-
-        let decoded = self.decoder.decode(&values)?;
+        let decoded = self.decoder.flush();
 
         // Sanity check
         assert!(matches!(decoded.data_type(), DataType::Struct(_)));
         assert_eq!(decoded.null_count(), 0);
-        assert_eq!(decoded.len(), values.len());
+        assert_eq!(decoded.len(), read);
 
         // Clear out buffer
-        self.buffer.drain(0..last_offset);
-        self.end_offsets.clear();
-
         let columns = decoded
             .child_data()
             .iter()
@@ -214,20 +178,6 @@ impl<R: Read> RawReader<R> {
         let batch = RecordBatch::try_new(self.schema.clone(), columns)?;
         Ok(Some(batch))
     }
-}
-
-fn to_raw_value(s: &str) -> Result<&RawValue, ArrowError> {
-    serde_json::from_str(s).map_err(|_| {
-        ArrowError::JsonError(format!("Encountered invalid JSON: \"{}\"", s))
-    })
-}
-
-fn to_str(b: &[u8]) -> Result<&str, ArrowError> {
-    std::str::from_utf8(b).map_err(|_| utf8_err())
-}
-
-fn utf8_err() -> ArrowError {
-    ArrowError::JsonError("Encountered non-UTF-8 data".to_string())
 }
 
 impl<R: BufRead> Iterator for RawReader<R> {
@@ -245,26 +195,36 @@ impl<R: BufRead> RecordBatchReader for RawReader<R> {
 }
 
 trait ArrayDecoder {
-    fn decode(&mut self, values: &[Option<&RawValue>]) -> Result<ArrayData, ArrowError>;
+    /// Visits the provided row
+    ///
+    /// Returns the number of bytes read
+    fn visit(&mut self, row: usize, buf: &str) -> Result<usize, ArrowError>;
+
+    /// Flushes the contents of the decoder to an [`ArrayData`]
+    fn flush(&mut self) -> ArrayData;
 }
 
 macro_rules! primitive_decoder {
-    ($t:ty, $data_type:expr) => {
-        Ok(Box::new(PrimitiveArrayDecoder::<$t>::new($data_type)))
+    ($t:ty, $data_type:expr, $batch_size:expr) => {
+        Ok(Box::new(PrimitiveArrayDecoder::<$t>::new(
+            $data_type,
+            $batch_size,
+        )))
     };
 }
 
-fn make_decoder(data_type: DataType) -> Result<Box<dyn ArrayDecoder>, ArrowError> {
-    // TODO: Support more types
-
+fn make_decoder(
+    data_type: DataType,
+    batch_size: usize,
+) -> Result<Box<dyn ArrayDecoder>, ArrowError> {
     downcast_integer! {
-        data_type => (primitive_decoder, data_type),
-        DataType::Float32 => primitive_decoder!(Float32Type, data_type),
-        DataType::Float64 => primitive_decoder!(Float64Type, data_type),
-        DataType::Boolean => Ok(Box::new(BooleanArrayDecoder::default())),
-        DataType::Utf8 => Ok(Box::new(StringArrayDecoder::<i32>::default())),
-        DataType::LargeUtf8 => Ok(Box::new(StringArrayDecoder::<i64>::default())),
-        DataType::Struct(_) => Ok(Box::new(StructArrayDecoder::new(data_type)?)),
+        data_type => (primitive_decoder, data_type, batch_size),
+        DataType::Float32 => primitive_decoder!(Float32Type, data_type, batch_size),
+        DataType::Float64 => primitive_decoder!(Float64Type, data_type, batch_size),
+        DataType::Boolean => Ok(Box::new(BooleanArrayDecoder::new(batch_size))),
+        DataType::Utf8 => Ok(Box::new(StringArrayDecoder::<i32>::new(batch_size))),
+        DataType::LargeUtf8 => Ok(Box::new(StringArrayDecoder::<i64>::new(batch_size))),
+        DataType::Struct(_) => Ok(Box::new(StructArrayDecoder::new(data_type, batch_size)?)),
         DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_) => {
             Err(ArrowError::JsonError(format!("{} is not supported by JSON", data_type)))
         }

@@ -16,29 +16,24 @@
 // under the License.
 
 use num::NumCast;
-use std::marker::PhantomData;
-
-use serde_json::value::RawValue;
 
 use arrow_array::builder::PrimitiveBuilder;
-use arrow_array::{Array, ArrowPrimitiveType, PrimitiveArray};
+use arrow_array::{Array, ArrowPrimitiveType};
 use arrow_cast::parse::Parser;
 use arrow_data::ArrayData;
 use arrow_schema::{ArrowError, DataType};
 
 use crate::raw::ArrayDecoder;
 
-pub struct PrimitiveArrayDecoder<P> {
-    phantom: PhantomData<P>,
-    data_type: DataType,
+pub struct PrimitiveArrayDecoder<P: ArrowPrimitiveType> {
+    builder: PrimitiveBuilder<P>,
 }
 
 impl<P: ArrowPrimitiveType> PrimitiveArrayDecoder<P> {
-    pub fn new(data_type: DataType) -> Self {
-        assert!(PrimitiveArray::<P>::is_compatible(&data_type));
+    pub fn new(data_type: DataType, batch_size: usize) -> Self {
         Self {
-            phantom: Default::default(),
-            data_type,
+            builder: PrimitiveBuilder::with_capacity(batch_size)
+                .with_data_type(data_type),
         }
     }
 }
@@ -48,38 +43,36 @@ where
     P: ArrowPrimitiveType + Parser,
     P::Native: NumCast,
 {
-    fn decode(&mut self, values: &[Option<&RawValue>]) -> Result<ArrayData, ArrowError> {
-        let mut builder = PrimitiveBuilder::<P>::with_capacity(values.len());
-        for v in values {
-            match v {
-                Some(v) => {
-                    let v = v.get();
-                    // First attempt to parse as primitive
-                    let value = match serde_json::from_str::<Option<f64>>(v) {
-                        Ok(Some(v)) => Some(NumCast::from(v).ok_or_else(|| {
-                            ArrowError::JsonError(format!(
-                                "Failed to convert {v} to {}",
-                                self.data_type
-                            ))
-                        })?),
-                        Ok(None) => None,
-                        // Fallback to using Parser
-                        Err(_) => match serde_json::from_str(v).ok().and_then(P::parse) {
-                            Some(s) => Some(s),
-                            None => {
-                                return Err(ArrowError::JsonError(format!(
-                                    "Failed to parse {v} as {}",
-                                    self.data_type
-                                )))
-                            }
-                        },
-                    };
-                    builder.append_option(value);
+    fn visit(&mut self, row: &str) -> Result<usize, ArrowError> {
+        let trimmed = row.trim_start();
+        let trimmed_bytes = row.len() - trimmed.len();
+
+        match trimmed.as_bytes()[0] {
+            b'"' => todo!(),
+            b'n' if trimmed.starts_with("null") => {
+                self.builder.append_null();
+                return Ok(trimmed_bytes + 4);
+            }
+            _ => {
+                let (s, _) = trimmed
+                    .split_once(|c: char| !matches!(c, ']' | ',' | '}'))
+                    .expect("todo");
+
+                match P::parse(s) {
+                    None => Err(ArrowError::JsonError(format!(
+                        "expected primitive got {}",
+                        s
+                    ))),
+                    Some(v) => {
+                        self.builder.append_value(v);
+                        Ok(trimmed_bytes + s.len())
+                    }
                 }
-                None => builder.append_null(),
             }
         }
+    }
 
-        Ok(builder.finish().into_data())
+    fn flush(&mut self) -> ArrayData {
+        self.builder.finish().into_data()
     }
 }

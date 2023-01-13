@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use serde_json::value::RawValue;
-
 use arrow_array::builder::BooleanBuilder;
 use arrow_array::Array;
 use arrow_data::ArrayData;
@@ -24,28 +22,52 @@ use arrow_schema::ArrowError;
 
 use crate::raw::ArrayDecoder;
 
-#[derive(Default)]
-pub struct BooleanArrayDecoder {}
+pub struct BooleanArrayDecoder {
+    builder: BooleanBuilder,
+}
+
+impl BooleanArrayDecoder {
+    pub fn new(batch_size: usize) -> Self {
+        Self {
+            builder: BooleanBuilder::with_capacity(batch_size),
+        }
+    }
+}
 
 impl ArrayDecoder for BooleanArrayDecoder {
-    fn decode(&mut self, values: &[Option<&RawValue>]) -> Result<ArrayData, ArrowError> {
-        let mut builder = BooleanBuilder::with_capacity(values.len());
-        for v in values {
-            match v {
-                Some(v) => {
-                    let v = v.get();
-                    // First attempt to parse as primitive
-                    let value = serde_json::from_str(v).map_err(|_| {
-                        ArrowError::JsonError(format!(
-                            "Failed to parse {v} as DataType::Boolean",
-                        ))
-                    })?;
-                    builder.append_option(value);
+    fn visit(&mut self, row: usize, row: &str) -> Result<usize, ArrowError> {
+        let trimmed = row.trim_start();
+        let trimmed_bytes = row.len() - trimmed.len();
+        match row.as_bytes()[0] {
+            b't' => {
+                if trimmed.starts_with("true") {
+                    self.builder.append_value(true);
+                    return Ok(4 + trimmed_bytes);
                 }
-                None => builder.append_null(),
             }
+            b'f' => {
+                if trimmed.starts_with("false") {
+                    self.builder.append_value(false);
+                    return Ok(5 + trimmed_bytes);
+                }
+            }
+            b'n' => {
+                if trimmed.starts_with("null") {
+                    self.builder.append_null();
+                    return Ok(4 + trimmed_bytes);
+                }
+            }
+            b'"' => todo!(),
+            _ => {}
         }
 
-        Ok(builder.finish().into_data())
+        Err(ArrowError::JsonError(format!(
+            "expected boolean got {}",
+            row
+        )))
+    }
+
+    fn flush(&mut self) -> ArrayData {
+        self.builder.finish().into_data()
     }
 }

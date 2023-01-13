@@ -18,50 +18,59 @@
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
-use serde_json::value::RawValue;
-
-use arrow_array::builder::GenericStringBuilder;
+use arrow_array::builder::{GenericStringBuilder, StringBuilder};
 use arrow_array::{Array, OffsetSizeTrait};
 use arrow_data::ArrayData;
 use arrow_schema::ArrowError;
 
 use crate::raw::ArrayDecoder;
 
-#[derive(Default)]
-pub struct StringArrayDecoder<O> {
-    phantom: PhantomData<O>,
+pub struct StringArrayDecoder<O: OffsetSizeTrait> {
+    builder: GenericStringBuilder<O>,
 }
 
-impl<O> ArrayDecoder for StringArrayDecoder<O>
-where
-    O: OffsetSizeTrait,
-{
-    fn decode(&mut self, values: &[Option<&RawValue>]) -> Result<ArrayData, ArrowError> {
-        let bytes_capacity = values
-            .iter()
-            .map(|x| x.map(|x| x.get().len()).unwrap_or_default())
-            .sum();
-
-        let mut builder =
-            GenericStringBuilder::<O>::with_capacity(values.len(), bytes_capacity);
-        for v in values {
-            match v {
-                Some(v) => {
-                    let v = v.get();
-                    // Use Cow to allow for strings containing escapes
-                    let value: Option<Cow<str>> =
-                        serde_json::from_str(v).map_err(|_| {
-                            ArrowError::JsonError(format!(
-                                "Failed to parse \"{}\" as string",
-                                v
-                            ))
-                        })?;
-                    builder.append_option(value);
-                }
-                None => builder.append_null(),
-            }
+impl<O: OffsetSizeTrait> StringArrayDecoder<O> {
+    pub fn new(batch_size: usize) -> Self {
+        Self {
+            builder: GenericStringBuilder::with_capacity(batch_size, batch_size * 12),
         }
-
-        Ok(builder.finish().into_data())
     }
+}
+
+impl<O: OffsetSizeTrait> ArrayDecoder for StringArrayDecoder<O> {
+    fn visit(&mut self, row: &str) -> Result<usize, ArrowError> {
+        todo!()
+    }
+
+    fn flush(&mut self) -> ArrayData {
+        todo!()
+    }
+    // fn decode(&mut self, values: &[Option<&RawValue>]) -> Result<ArrayData, ArrowError> {
+    //     let bytes_capacity = values
+    //         .iter()
+    //         .map(|x| x.map(|x| x.get().len()).unwrap_or_default())
+    //         .sum();
+    //
+    //     let mut builder =
+    //         GenericStringBuilder::<O>::with_capacity(values.len(), bytes_capacity);
+    //     for v in values {
+    //         match v {
+    //             Some(v) => {
+    //                 let v = v.get();
+    //                 // Use Cow to allow for strings containing escapes
+    //                 let value: Option<Cow<str>> =
+    //                     serde_json::from_str(v).map_err(|_| {
+    //                         ArrowError::JsonError(format!(
+    //                             "Failed to parse \"{}\" as string",
+    //                             v
+    //                         ))
+    //                     })?;
+    //                 builder.append_option(value);
+    //             }
+    //             None => builder.append_null(),
+    //         }
+    //     }
+    //
+    //     Ok(builder.finish().into_data())
+    // }
 }
