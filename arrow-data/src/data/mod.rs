@@ -1715,13 +1715,14 @@ impl ArrayDataBuilder {
         Self { data_type, ..self }
     }
 
-    #[inline]
     #[allow(clippy::len_without_is_empty)]
+    #[inline]
     pub const fn len(mut self, n: usize) -> Self {
         self.len = n;
         self
     }
 
+    #[inline]
     pub fn nulls(mut self, nulls: Option<NullBuffer>) -> Self {
         self.nulls = nulls;
         self.null_count = None;
@@ -1746,6 +1747,7 @@ impl ArrayDataBuilder {
         self
     }
 
+    #[inline]
     pub fn buffers(mut self, v: Vec<Buffer>) -> Self {
         self.buffers = v;
         self
@@ -1756,11 +1758,13 @@ impl ArrayDataBuilder {
         self
     }
 
+    #[inline]
     pub fn child_data(mut self, v: Vec<ArrayData>) -> Self {
         self.child_data = v;
         self
     }
 
+    #[inline]
     pub fn add_child_data(mut self, r: ArrayData) -> Self {
         self.child_data.push(r);
         self
@@ -1773,6 +1777,7 @@ impl ArrayDataBuilder {
     /// The same caveats as [`ArrayData::new_unchecked`]
     /// apply.
     #[allow(clippy::let_and_return)]
+    #[inline]
     pub unsafe fn build_unchecked(self) -> ArrayData {
         let nulls = self.nulls.or_else(|| {
             let buffer = self.null_bit_buffer?;
