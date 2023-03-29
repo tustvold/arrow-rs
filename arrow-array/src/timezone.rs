@@ -53,6 +53,7 @@ mod private {
     use super::*;
     use chrono::offset::TimeZone;
     use chrono::{LocalResult, NaiveDate, NaiveDateTime, Offset};
+    use std::cmp::Ordering;
     use std::str::FromStr;
 
     /// An [`Offset`] for [`Tz`]
@@ -75,13 +76,70 @@ mod private {
     }
 
     /// An Arrow [`TimeZone`]
-    #[derive(Debug, Copy, Clone)]
+    ///
+    /// Note: [`Ord`] implementation is an arbitrary total ordering
+    #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
     pub struct Tz(TzInner);
 
-    #[derive(Debug, Copy, Clone)]
+    impl Tz {
+        /// Returns the UTC timezone
+        pub fn utc() -> Self {
+            Self(TzInner::Offset(FixedOffset::east_opt(0).unwrap()))
+        }
+
+        /// Makes a new FixedOffset for the Eastern Hemisphere with given timezone difference.
+        ///
+        /// The negative minutes means the Western Hemisphere.
+        /// Returns None on the out-of-bound minutes.
+        pub fn east(minutes: i32) -> Option<Self> {
+            Some(Self(TzInner::Offset(FixedOffset::east_opt(
+                minutes.checked_mul(60)?,
+            )?)))
+        }
+
+        /// Makes a new FixedOffset for the Western Hemisphere with given timezone difference.
+        ///
+        /// The negative minutes means the Eastern Hemisphere.
+        /// Returns None on the out-of-bound minutes.
+        pub fn west(minutes: i32) -> Option<Self> {
+            Some(Self(TzInner::Offset(FixedOffset::west_opt(
+                minutes.checked_mul(60)?,
+            )?)))
+        }
+    }
+
+    impl std::fmt::Display for Tz {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self.0 {
+                TzInner::Timezone(tz) => write!(f, "{tz}"),
+                TzInner::Offset(offset) => write!(f, "{offset}"),
+            }
+        }
+    }
+
+    #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
     enum TzInner {
         Timezone(chrono_tz::Tz),
         Offset(FixedOffset),
+    }
+
+    impl PartialOrd for Tz {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Ord for Tz {
+        fn cmp(&self, other: &Self) -> Ordering {
+            match (&self.0, &other.0) {
+                (TzInner::Offset(a), TzInner::Offset(b)) => {
+                    a.utc_minus_local().cmp(&b.utc_minus_local())
+                }
+                (TzInner::Offset(_), TzInner::Timezone(_)) => Ordering::Less,
+                (TzInner::Timezone(_), TzInner::Offset(_)) => Ordering::Greater,
+                (TzInner::Timezone(a), TzInner::Timezone(b)) => a.name().cmp(b.name()),
+            }
+        }
     }
 
     impl FromStr for Tz {
@@ -231,6 +289,19 @@ mod private {
                 sydney_offset_with_dst
             );
         }
+
+        #[test]
+        fn test_ordering() {
+            let sydney_tz: Tz = "Australia/Sydney".parse().unwrap();
+            let los_angeles: Tz = "America/Los_Angeles".parse().unwrap();
+
+            // Sorted alphabetically
+            assert!(los_angeles < sydney_tz);
+            assert!(sydney_tz > los_angeles);
+            // Offset timezones always less
+            assert!(Tz::west(12 * 60).unwrap() < sydney_tz);
+            assert!(sydney_tz > Tz::west(12 * 60).unwrap());
+        }
     }
 }
 
@@ -239,10 +310,11 @@ mod private {
     use super::*;
     use chrono::offset::TimeZone;
     use chrono::{FixedOffset, LocalResult, NaiveDate, NaiveDateTime, Offset};
+    use std::cmp::Ordering;
     use std::str::FromStr;
 
     /// An [`Offset`] for [`Tz`]
-    #[derive(Debug, Copy, Clone)]
+    #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
     pub struct TzOffset(FixedOffset);
 
     impl std::fmt::Display for TzOffset {
@@ -258,8 +330,45 @@ mod private {
     }
 
     /// An Arrow [`TimeZone`]
-    #[derive(Debug, Copy, Clone)]
+    ///
+    /// Note: [`Ord`] implementation is an arbitrary total ordering
+    #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
     pub struct Tz(FixedOffset);
+
+    impl Tz {
+        /// Returns the UTC timezone
+        pub fn utc() -> Self {
+            Self(FixedOffset::east_opt(0).unwrap())
+        }
+
+        /// Makes a new FixedOffset for the Eastern Hemisphere with given timezone difference.
+        ///
+        /// The negative minutes means the Western Hemisphere.
+        /// Returns None on the out-of-bound minutes.
+        pub fn east(minutes: i32) -> Option<Self> {
+            Some(Self(FixedOffset::east_opt(minutes.checked_mul(60)?)?))
+        }
+
+        /// Makes a new FixedOffset for the Western Hemisphere with given timezone difference.
+        ///
+        /// The negative secs means the Eastern Hemisphere.
+        /// Returns None on the out-of-bound secs.
+        pub fn west(minutes: i32) -> Option<Self> {
+            Some(Self(FixedOffset::west_opt(minutes.checked_mul(60)?)?))
+        }
+    }
+
+    impl PartialOrd for Tz {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Ord for Tz {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.0.utc_minus_local().cmp(&other.0.utc_minus_local())
+        }
+    }
 
     impl FromStr for Tz {
         type Err = ArrowError;
@@ -271,6 +380,12 @@ mod private {
                 ))
             })?;
             Ok(Self(offset))
+        }
+    }
+
+    impl std::fmt::Display for Tz {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
         }
     }
 
@@ -341,5 +456,26 @@ mod tests {
 
         let err = "+9:00".parse::<Tz>().unwrap_err().to_string();
         assert!(err.contains("Invalid timezone"), "{}", err);
+    }
+
+    #[test]
+    fn test_display_ord() {
+        let cases = [
+            Tz::east(60).unwrap(),
+            Tz::west(-1).unwrap(),
+            Tz::utc(),
+            Tz::east(-1).unwrap(),
+            Tz::west(60).unwrap(),
+        ];
+
+        for case in cases {
+            let s = case.to_string();
+            let parsed: Tz = s.parse().unwrap();
+            assert_eq!(case, parsed);
+        }
+
+        for w in cases.windows(2) {
+            assert!(w[0] < w[1], "{} vs {}", w[0], w[1]);
+        }
     }
 }
