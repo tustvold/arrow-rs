@@ -43,9 +43,10 @@ use crate::schema::types::{
     self, ColumnDescPtr, SchemaDescPtr, SchemaDescriptor, TypePtr,
 };
 
-/// A wrapper around a [`Write`] that keeps track of the number
-/// of bytes that have been written. The given [`Write`] is wrapped
-/// with a [`BufWriter`] to optimize writing performance.
+/// A wrapper around a [`Write`] that implements [`TrackingWrite`] by keeping
+/// track of the number of bytes written
+///
+/// The given [`Write`] is also wrapped with a [`BufWriter`] to optimize writing performance
 pub struct TrackedWrite<W: Write> {
     inner: BufWriter<W>,
     bytes_written: usize,
@@ -59,11 +60,6 @@ impl<W: Write> TrackedWrite<W> {
             inner: buf_write,
             bytes_written: 0,
         }
-    }
-
-    /// Returns the number of bytes written to this instance
-    pub fn bytes_written(&self) -> usize {
-        self.bytes_written
     }
 
     /// Returns the underlying writer.
@@ -99,6 +95,24 @@ impl<W: Write> Write for TrackedWrite<W> {
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
+    }
+}
+
+/// A [`Write`] that tracks the total number of written bytes
+pub trait TrackingWrite: Write {
+    /// Returns the number of bytes written to this instance
+    fn bytes_written(&self) -> usize;
+}
+
+impl<W: Write> TrackingWrite for TrackedWrite<W> {
+    fn bytes_written(&self) -> usize {
+        self.bytes_written
+    }
+}
+
+impl<W: TrackingWrite + ?Sized> TrackingWrite for &mut W {
+    fn bytes_written(&self) -> usize {
+        W::bytes_written(self)
     }
 }
 
@@ -442,7 +456,7 @@ impl<'a, W: Write> SerializedRowGroupWriter<'a, W> {
         if self.column_index >= self.descr.num_columns() {
             return Ok(None);
         }
-        let page_writer = Box::new(SerializedPageWriter::new(self.buf));
+        let page_writer = Box::new(SerializedPageWriter::new(&mut *self.buf));
 
         let total_bytes_written = &mut self.total_bytes_written;
         let total_uncompressed_bytes = &mut self.total_uncompressed_bytes;
@@ -588,13 +602,13 @@ impl<'a> SerializedColumnWriter<'a> {
 /// Writes and serializes pages and metadata into output stream.
 ///
 /// `SerializedPageWriter` should not be used after calling `close()`.
-pub struct SerializedPageWriter<'a, W: Write> {
-    sink: &'a mut TrackedWrite<W>,
+pub struct SerializedPageWriter<W: TrackingWrite> {
+    sink: W,
 }
 
-impl<'a, W: Write> SerializedPageWriter<'a, W> {
+impl<W: TrackingWrite> SerializedPageWriter<W> {
     /// Creates new page writer.
-    pub fn new(sink: &'a mut TrackedWrite<W>) -> Self {
+    pub fn new(sink: W) -> Self {
         Self { sink }
     }
 
@@ -611,7 +625,7 @@ impl<'a, W: Write> SerializedPageWriter<'a, W> {
     }
 }
 
-impl<'a, W: Write> PageWriter for SerializedPageWriter<'a, W> {
+impl<W: TrackingWrite> PageWriter for SerializedPageWriter<W> {
     fn write_page(&mut self, page: CompressedPage) -> Result<PageWriteSpec> {
         let uncompressed_size = page.uncompressed_size();
         let compressed_size = page.compressed_size();
