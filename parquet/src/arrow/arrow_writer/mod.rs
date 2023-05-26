@@ -781,6 +781,42 @@ mod tests {
         roundtrip(batch, Some(SMALL_SIZE / 2));
     }
 
+    #[test]
+    fn in_progress_accounting() {
+        // define schema
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+
+        // create some data
+        let a = Int32Array::from(vec![1, 2, 3, 4, 5]);
+
+        // build a record batch
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(a)]).unwrap();
+
+        let mut writer = ArrowWriter::try_new(vec![], batch.schema(), None).unwrap();
+
+        // starts empty
+        assert_eq!(writer.in_progress_size(), 0);
+        assert_eq!(writer.in_progress_rows(), 0);
+        writer.write(&batch).unwrap();
+
+        // updated on write
+        let initial_size = writer.in_progress_size();
+        assert!(initial_size > 0);
+        assert_eq!(writer.in_progress_rows(), 5);
+
+        // updated on second write
+        writer.write(&batch).unwrap();
+        assert!(writer.in_progress_size() > initial_size);
+        assert_eq!(writer.in_progress_rows(), 10);
+
+        // cleared on flush
+        writer.flush().unwrap();
+        assert_eq!(writer.in_progress_size(), 0);
+        assert_eq!(writer.in_progress_rows(), 0);
+
+        writer.close().unwrap();
+    }
+
     fn get_bytes_after_close(schema: SchemaRef, expected_batch: &RecordBatch) -> Vec<u8> {
         let mut buffer = vec![];
 
