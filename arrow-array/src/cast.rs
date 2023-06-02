@@ -19,7 +19,6 @@
 
 use crate::array::*;
 use crate::types::*;
-use arrow_data::ArrayData;
 
 /// Repeats the provided pattern based on the number of comma separated identifiers
 #[doc(hidden)]
@@ -705,9 +704,9 @@ array_downcast_fn!(as_decimal_array, Decimal128Array);
 /// Panics if array is not of the correct data type
 pub fn downcast_array<T>(array: &dyn Array) -> T
 where
-    T: From<ArrayData>,
+    T: Clone + 'static,
 {
-    T::from(array.to_data())
+    array.as_any().downcast_ref::<T>().unwrap().clone()
 }
 
 mod private {
