@@ -287,7 +287,7 @@ where
 
     let data: &[T::Native] = array.values();
 
-    match array.nulls() {
+    match array.nulls().filter(|x| x.null_count() > 0) {
         None => Some(sum_no_nulls(data)),
         Some(nulls) => {
             let mut sum = T::default_value();
