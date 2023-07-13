@@ -288,13 +288,7 @@ where
     let data: &[T::Native] = array.values();
 
     match array.nulls() {
-        None => {
-            let sum = data.iter().fold(T::default_value(), |accumulator, value| {
-                accumulator.add_wrapping(*value)
-            });
-
-            Some(sum)
-        }
+        None => Some(sum_no_nulls(data)),
         Some(nulls) => {
             let mut sum = T::default_value();
             let data_chunks = data.chunks_exact(64);
@@ -325,6 +319,13 @@ where
             Some(sum)
         }
     }
+}
+
+#[inline(never)]
+fn sum_no_nulls<T: ArrowNativeTypeOp>(data: &[T]) -> T {
+    data.iter().fold(T::default(), |accumulator, value| {
+        accumulator.add_wrapping(*value)
+    })
 }
 
 macro_rules! bit_operation {
