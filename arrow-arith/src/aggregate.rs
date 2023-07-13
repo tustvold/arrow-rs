@@ -279,52 +279,21 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    let null_count = array.null_count();
-
-    if null_count == array.len() {
+    if array.null_count() == array.len() {
         return None;
     }
 
-    let data: &[T::Native] = array.values();
+    let init = T::Native::ZERO;
+    let values = array.values();
 
-    match array.nulls() {
-        None => {
-            let sum = data.iter().fold(T::default_value(), |accumulator, value| {
-                accumulator.add_wrapping(*value)
-            });
-
-            Some(sum)
-        }
-        Some(nulls) => {
-            let mut sum = T::default_value();
-            let data_chunks = data.chunks_exact(64);
-            let remainder = data_chunks.remainder();
-
-            let bit_chunks = nulls.inner().bit_chunks();
-            data_chunks
-                .zip(bit_chunks.iter())
-                .for_each(|(chunk, mask)| {
-                    // index_mask has value 1 << i in the loop
-                    let mut index_mask = 1;
-                    chunk.iter().for_each(|value| {
-                        if (mask & index_mask) != 0 {
-                            sum = sum.add_wrapping(*value);
-                        }
-                        index_mask <<= 1;
-                    });
-                });
-
-            let remainder_bits = bit_chunks.remainder_bits();
-
-            remainder.iter().enumerate().for_each(|(i, value)| {
-                if remainder_bits & (1 << i) != 0 {
-                    sum = sum.add_wrapping(*value);
-                }
-            });
-
-            Some(sum)
-        }
-    }
+    let sum = match array.nulls().filter(|x| x.null_count() > 0) {
+        Some(nulls) => nulls.valid_indices().fold(init, |acc, x| {
+            let v = unsafe { values.get_unchecked(x) };
+            acc.add_wrapping(*v)
+        }),
+        None => values.iter().fold(init, |acc, x| acc.add_wrapping(*x)),
+    };
+    Some(sum)
 }
 
 macro_rules! bit_operation {
