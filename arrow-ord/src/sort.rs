@@ -170,14 +170,15 @@ pub fn sort_limit(
 
 /// we can only do this if the T is primitive
 #[inline]
-fn sort_unstable_by<T, F>(array: &mut [T], limit: usize, cmp: F)
+fn sort_impl<T, F, I>(array: &mut [T], limit: usize, cmp: F, cmp_idx: I)
 where
-    F: FnMut(&T, &T) -> Ordering,
+    F: Fn(&T, &T) -> Ordering,
+    I: Fn(&T, &T) -> Ordering,
 {
     if array.len() == limit {
-        array.sort_unstable_by(cmp);
+        array.sort_by(cmp);
     } else {
-        partial_sort(array, limit, cmp);
+        partial_sort(array, limit, |a, b| cmp(a, b).then_with(|| cmp_idx(a, b)));
     }
 }
 
@@ -1175,9 +1176,12 @@ pub fn lexsort_to_indices(
 
     let lexicographical_comparator = LexicographicalComparator::try_new(columns)?;
     // uint32 can be sorted unstably
-    sort_unstable_by(&mut value_indices, len, |a, b| {
-        lexicographical_comparator.compare(*a, *b)
-    });
+    sort_impl(
+        &mut value_indices,
+        len,
+        |a, b| lexicographical_comparator.compare(*a, *b),
+        |a, b| a.cmp(b),
+    );
 
     Ok(UInt32Array::from_iter_values(
         value_indices.iter().take(len).map(|i| *i as u32),
@@ -1276,15 +1280,25 @@ fn sort_valids<T, U>(
     valids: &mut [(u32, T)],
     nulls: &mut [U],
     len: usize,
-    mut cmp: impl FnMut(T, T) -> Ordering,
+    cmp: impl Fn(T, T) -> Ordering,
 ) where
     T: ?Sized + Copy,
 {
     let valids_len = valids.len();
     if !descending {
-        sort_unstable_by(valids, len.min(valids_len), |a, b| cmp(a.1, b.1));
+        sort_impl(
+            valids,
+            len.min(valids_len),
+            |a, b| cmp(a.1, b.1),
+            |a, b| a.0.cmp(&b.0),
+        );
     } else {
-        sort_unstable_by(valids, len.min(valids_len), |a, b| cmp(a.1, b.1).reverse());
+        sort_impl(
+            valids,
+            len.min(valids_len),
+            |a, b| cmp(a.1, b.1).reverse(),
+            |a, b| a.0.cmp(&b.0),
+        );
         // reverse to keep a stable ordering
         nulls.reverse();
     }
@@ -1298,13 +1312,19 @@ fn sort_valids_array<T>(
 ) {
     let valids_len = valids.len();
     if !descending {
-        sort_unstable_by(valids, len.min(valids_len), |a, b| {
-            cmp_array(a.1.as_ref(), b.1.as_ref())
-        });
+        sort_impl(
+            valids,
+            len.min(valids_len),
+            |a, b| cmp_array(a.1.as_ref(), b.1.as_ref()),
+            |a, b| a.0.cmp(&b.0),
+        );
     } else {
-        sort_unstable_by(valids, len.min(valids_len), |a, b| {
-            cmp_array(a.1.as_ref(), b.1.as_ref()).reverse()
-        });
+        sort_impl(
+            valids,
+            len.min(valids_len),
+            |a, b| cmp_array(a.1.as_ref(), b.1.as_ref()).reverse(),
+            |a, b| a.0.cmp(&b.0),
+        );
         // reverse to keep a stable ordering
         nulls.reverse();
     }
