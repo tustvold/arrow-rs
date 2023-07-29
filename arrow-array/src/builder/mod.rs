@@ -154,6 +154,8 @@ mod boolean_builder;
 pub use boolean_builder::*;
 mod buffer_builder;
 pub use buffer_builder::*;
+mod generic_bytes_view_builder;
+pub use generic_bytes_view_builder::*;
 mod fixed_size_binary_builder;
 pub use fixed_size_binary_builder::*;
 mod fixed_size_list_builder;

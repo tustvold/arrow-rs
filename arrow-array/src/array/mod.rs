@@ -34,6 +34,9 @@ pub use boolean_array::*;
 mod byte_array;
 pub use byte_array::*;
 
+mod bytes_view_array;
+pub use bytes_view_array::*;
+
 mod dictionary_array;
 pub use dictionary_array::*;
 

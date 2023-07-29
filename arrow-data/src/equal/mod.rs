@@ -24,6 +24,7 @@ use arrow_buffer::i256;
 use arrow_schema::{DataType, IntervalUnit};
 use half::f16;
 
+mod binary_view;
 mod boolean;
 mod dictionary;
 mod fixed_binary;
@@ -40,6 +41,7 @@ mod variable_size;
 // these methods assume the same type, len and null count.
 // For this reason, they are not exposed and are instead used
 // to build the generic functions below (`equal_range` and `equal`).
+use crate::equal::binary_view::binary_view_equal;
 use boolean::boolean_equal;
 use dictionary::dictionary_equal;
 use fixed_binary::fixed_binary_equal;
@@ -74,6 +76,7 @@ fn equal_values(
         DataType::Int16 => primitive_equal::<i16>(lhs, rhs, lhs_start, rhs_start, len),
         DataType::Int32 => primitive_equal::<i32>(lhs, rhs, lhs_start, rhs_start, len),
         DataType::Int64 => primitive_equal::<i64>(lhs, rhs, lhs_start, rhs_start, len),
+        DataType::Float16 => primitive_equal::<f16>(lhs, rhs, lhs_start, rhs_start, len),
         DataType::Float32 => primitive_equal::<f32>(lhs, rhs, lhs_start, rhs_start, len),
         DataType::Float64 => primitive_equal::<f64>(lhs, rhs, lhs_start, rhs_start, len),
         DataType::Decimal128(_, _) => primitive_equal::<i128>(lhs, rhs, lhs_start, rhs_start, len),
@@ -95,9 +98,11 @@ fn equal_values(
         DataType::LargeUtf8 | DataType::LargeBinary => {
             variable_sized_equal::<i64>(lhs, rhs, lhs_start, rhs_start, len)
         }
-        DataType::FixedSizeBinary(_) => fixed_binary_equal(lhs, rhs, lhs_start, rhs_start, len),
         DataType::BinaryView | DataType::Utf8View => {
-            unimplemented!("BinaryView/Utf8View not yet implemented")
+            binary_view_equal(lhs, rhs, lhs_start, rhs_start, len)
+        }
+        DataType::FixedSizeBinary(_) => {
+            fixed_binary_equal(lhs, rhs, lhs_start, rhs_start, len)
         }
         DataType::List(_) => list_equal::<i32>(lhs, rhs, lhs_start, rhs_start, len),
         DataType::LargeList(_) => list_equal::<i64>(lhs, rhs, lhs_start, rhs_start, len),
@@ -115,7 +120,6 @@ fn equal_values(
             DataType::UInt64 => dictionary_equal::<u64>(lhs, rhs, lhs_start, rhs_start, len),
             _ => unreachable!(),
         },
-        DataType::Float16 => primitive_equal::<f16>(lhs, rhs, lhs_start, rhs_start, len),
         DataType::Map(_, _) => list_equal::<i32>(lhs, rhs, lhs_start, rhs_start, len),
         DataType::RunEndEncoded(_, _) => run_equal(lhs, rhs, lhs_start, rhs_start, len),
     }
