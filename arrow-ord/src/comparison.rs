@@ -710,7 +710,6 @@ macro_rules! dyn_compare_utf8_scalar {
 /// Perform `left == right` operation on an array and a numeric scalar
 /// value. Supports PrimitiveArrays, and DictionaryArrays that have primitive values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -731,7 +730,6 @@ where
 /// Perform `left < right` operation on an array and a numeric scalar
 /// value. Supports PrimitiveArrays, and DictionaryArrays that have primitive values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -752,7 +750,6 @@ where
 /// Perform `left <= right` operation on an array and a numeric scalar
 /// value. Supports PrimitiveArrays, and DictionaryArrays that have primitive values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -773,7 +770,6 @@ where
 /// Perform `left > right` operation on an array and a numeric scalar
 /// value. Supports PrimitiveArrays, and DictionaryArrays that have primitive values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -794,7 +790,6 @@ where
 /// Perform `left >= right` operation on an array and a numeric scalar
 /// value. Supports PrimitiveArrays, and DictionaryArrays that have primitive values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -815,7 +810,6 @@ where
 /// Perform `left != right` operation on an array and a numeric scalar
 /// value. Supports PrimitiveArrays, and DictionaryArrays that have primitive values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -1297,97 +1291,6 @@ where
 
     let values = BooleanBuffer::new(result.into(), 0, len);
     Ok(BooleanArray::new(values, nulls))
-}
-
-/// Helper function to perform boolean lambda function on values from an array and a scalar value using
-/// SIMD.
-#[cfg(feature = "simd")]
-fn simd_compare_op_scalar<T, SI, SC>(
-    left: &PrimitiveArray<T>,
-    right: T::Native,
-    simd_op: SI,
-    scalar_op: SC,
-) -> Result<BooleanArray, ArrowError>
-where
-    T: ArrowNumericType,
-    SI: Fn(T::Simd, T::Simd) -> T::SimdMask,
-    SC: Fn(T::Native, T::Native) -> bool,
-{
-    use std::borrow::BorrowMut;
-
-    let len = left.len();
-
-    // we process the data in chunks so that each iteration results in one u64 of comparison result bits
-    const CHUNK_SIZE: usize = 64;
-    let lanes = T::lanes();
-
-    // this is currently the case for all our datatypes and allows us to always append full bytes
-    assert!(
-        lanes <= CHUNK_SIZE,
-        "Number of vector lanes must be at most 64"
-    );
-
-    let buffer_size = bit_util::ceil(len, 8);
-    let mut result = MutableBuffer::new(buffer_size).with_bitset(buffer_size, false);
-
-    let mut left_chunks = left.values().chunks_exact(CHUNK_SIZE);
-    let simd_right = T::init(right);
-
-    let result_chunks = result.typed_data_mut();
-    let result_remainder =
-        left_chunks
-            .borrow_mut()
-            .fold(result_chunks, |result_slice, left_slice| {
-                let mut i = 0;
-                let mut bitmask = 0_u64;
-                while i < CHUNK_SIZE {
-                    let simd_left = T::load(&left_slice[i..]);
-                    let simd_result = simd_op(simd_left, simd_right);
-
-                    let m = T::mask_to_u64(&simd_result);
-                    bitmask |= m << i;
-
-                    i += lanes;
-                }
-                let bytes = bitmask.to_le_bytes();
-                result_slice[0..8].copy_from_slice(&bytes);
-
-                &mut result_slice[8..]
-            });
-
-    let left_remainder = left_chunks.remainder();
-
-    if !left_remainder.is_empty() {
-        let remainder_bitmask = left_remainder.iter().enumerate().fold(
-            0_u64,
-            |mut mask, (i, scalar_left)| {
-                let bit = scalar_op(*scalar_left, right) as u64;
-                mask |= bit << i;
-                mask
-            },
-        );
-        let remainder_mask_as_bytes =
-            &remainder_bitmask.to_le_bytes()[0..bit_util::ceil(left_remainder.len(), 8)];
-        result_remainder.copy_from_slice(remainder_mask_as_bytes);
-    }
-
-    let null_bit_buffer = left.nulls().map(|b| b.inner().sliced());
-
-    // null count is the same as in the input since the right side of the scalar comparison cannot be null
-    let null_count = left.null_count();
-
-    let data = unsafe {
-        ArrayData::new_unchecked(
-            DataType::Boolean,
-            len,
-            Some(null_count),
-            null_bit_buffer,
-            0,
-            vec![result.into()],
-            vec![],
-        )
-    };
-    Ok(BooleanArray::from(data))
 }
 
 fn cmp_primitive_array<T: ArrowPrimitiveType, F>(
@@ -2426,7 +2329,6 @@ pub fn gt_eq_dyn(
 
 /// Perform `left == right` operation on two [`PrimitiveArray`]s.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -2440,15 +2342,11 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    #[cfg(feature = "simd")]
-    return simd_compare_op(left, right, T::eq, |a, b| a == b);
-    #[cfg(not(feature = "simd"))]
     return compare_op(left, right, |a, b| a.is_eq(b));
 }
 
 /// Perform `left == right` operation on a [`PrimitiveArray`] and a scalar value.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -2462,9 +2360,6 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    #[cfg(feature = "simd")]
-    return simd_compare_op_scalar(left, right, T::eq, |a, b| a == b);
-    #[cfg(not(feature = "simd"))]
     return compare_op_scalar(left, |a| a.is_eq(right));
 }
 
@@ -2482,7 +2377,6 @@ where
 
 /// Perform `left != right` operation on two [`PrimitiveArray`]s.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -2496,15 +2390,11 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    #[cfg(feature = "simd")]
-    return simd_compare_op(left, right, T::ne, |a, b| a != b);
-    #[cfg(not(feature = "simd"))]
-    return compare_op(left, right, |a, b| a.is_ne(b));
+    compare_op(left, right, |a, b| a.is_ne(b))
 }
 
 /// Perform `left != right` operation on a [`PrimitiveArray`] and a scalar value.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -2518,16 +2408,12 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    #[cfg(feature = "simd")]
-    return simd_compare_op_scalar(left, right, T::ne, |a, b| a != b);
-    #[cfg(not(feature = "simd"))]
-    return compare_op_scalar(left, |a| a.is_ne(right));
+    compare_op_scalar(left, |a| a.is_ne(right))
 }
 
 /// Perform `left < right` operation on two [`PrimitiveArray`]s. Null values are less than non-null
 /// values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -2541,16 +2427,12 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    #[cfg(feature = "simd")]
-    return simd_compare_op(left, right, T::lt, |a, b| a < b);
-    #[cfg(not(feature = "simd"))]
-    return compare_op(left, right, |a, b| a.is_lt(b));
+    compare_op(left, right, |a, b| a.is_lt(b))
 }
 
 /// Perform `left < right` operation on a [`PrimitiveArray`] and a scalar value.
 /// Null values are less than non-null values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -2564,16 +2446,12 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    #[cfg(feature = "simd")]
-    return simd_compare_op_scalar(left, right, T::lt, |a, b| a < b);
-    #[cfg(not(feature = "simd"))]
-    return compare_op_scalar(left, |a| a.is_lt(right));
+    compare_op_scalar(left, |a| a.is_lt(right))
 }
 
 /// Perform `left <= right` operation on two [`PrimitiveArray`]s. Null values are less than non-null
 /// values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -2587,16 +2465,12 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    #[cfg(feature = "simd")]
-    return simd_compare_op(left, right, T::le, |a, b| a <= b);
-    #[cfg(not(feature = "simd"))]
-    return compare_op(left, right, |a, b| a.is_le(b));
+    compare_op(left, right, |a, b| a.is_le(b))
 }
 
 /// Perform `left <= right` operation on a [`PrimitiveArray`] and a scalar value.
 /// Null values are less than non-null values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -2610,16 +2484,12 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    #[cfg(feature = "simd")]
-    return simd_compare_op_scalar(left, right, T::le, |a, b| a <= b);
-    #[cfg(not(feature = "simd"))]
-    return compare_op_scalar(left, |a| a.is_le(right));
+    compare_op_scalar(left, |a| a.is_le(right))
 }
 
 /// Perform `left > right` operation on two [`PrimitiveArray`]s. Non-null values are greater than null
 /// values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -2633,16 +2503,12 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    #[cfg(feature = "simd")]
-    return simd_compare_op(left, right, T::gt, |a, b| a > b);
-    #[cfg(not(feature = "simd"))]
-    return compare_op(left, right, |a, b| a.is_gt(b));
+    compare_op(left, right, |a, b| a.is_gt(b))
 }
 
 /// Perform `left > right` operation on a [`PrimitiveArray`] and a scalar value.
 /// Non-null values are greater than null values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -2656,16 +2522,12 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    #[cfg(feature = "simd")]
-    return simd_compare_op_scalar(left, right, T::gt, |a, b| a > b);
-    #[cfg(not(feature = "simd"))]
-    return compare_op_scalar(left, |a| a.is_gt(right));
+    compare_op_scalar(left, |a| a.is_gt(right))
 }
 
 /// Perform `left >= right` operation on two [`PrimitiveArray`]s. Non-null values are greater than null
 /// values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -2679,16 +2541,12 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    #[cfg(feature = "simd")]
-    return simd_compare_op(left, right, T::ge, |a, b| a >= b);
-    #[cfg(not(feature = "simd"))]
-    return compare_op(left, right, |a, b| a.is_ge(b));
+    compare_op(left, right, |a, b| a.is_ge(b))
 }
 
 /// Perform `left >= right` operation on a [`PrimitiveArray`] and a scalar value.
 /// Non-null values are greater than null values.
 ///
-/// If `simd` feature flag is not enabled:
 /// For floating values like f32 and f64, this comparison produces an ordering in accordance to
 /// the totalOrder predicate as defined in the IEEE 754 (2008 revision) floating point standard.
 /// Note that totalOrder treats positive and negative zeros are different. If it is necessary
@@ -2702,10 +2560,7 @@ where
     T: ArrowNumericType,
     T::Native: ArrowNativeTypeOp,
 {
-    #[cfg(feature = "simd")]
-    return simd_compare_op_scalar(left, right, T::ge, |a, b| a >= b);
-    #[cfg(not(feature = "simd"))]
-    return compare_op_scalar(left, |a| a.is_ge(right));
+    compare_op_scalar(left, |a| a.is_ge(right))
 }
 
 /// Checks if a [`GenericListArray`] contains a value in the [`PrimitiveArray`]
@@ -4983,16 +4838,12 @@ mod tests {
             vec![Some(true), Some(false), Some(true), Some(true), Some(true)],
         );
         assert_eq!(eq_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(eq(&array1, &array2).unwrap(), expected);
 
         let expected = BooleanArray::from(
             vec![Some(false), Some(true), Some(false), Some(false), Some(false)],
         );
         assert_eq!(neq_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(neq(&array1, &array2).unwrap(), expected);
 
         let array1: Float32Array = vec![f32::NAN, 7.0, 8.0, 8.0, 10.0]
@@ -5007,16 +4858,12 @@ mod tests {
             vec![Some(true), Some(false), Some(true), Some(true), Some(true)],
         );
         assert_eq!(eq_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(eq(&array1, &array2).unwrap(), expected);
 
         let expected = BooleanArray::from(
             vec![Some(false), Some(true), Some(false), Some(false), Some(false)],
         );
         assert_eq!(neq_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(neq(&array1, &array2).unwrap(), expected);
 
         let array1: Float64Array = vec![f64::NAN, 7.0, 8.0, 8.0, 10.0]
@@ -5033,15 +4880,12 @@ mod tests {
         );
         assert_eq!(eq_dyn(&array1, &array2).unwrap(), expected);
 
-        #[cfg(not(feature = "simd"))]
         assert_eq!(eq(&array1, &array2).unwrap(), expected);
 
         let expected = BooleanArray::from(
             vec![Some(false), Some(true), Some(false), Some(false), Some(false)],
         );
         assert_eq!(neq_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(neq(&array1, &array2).unwrap(), expected);
     }
 
@@ -5060,16 +4904,12 @@ mod tests {
             vec![Some(false), Some(true), Some(false), Some(true), Some(false), Some(false)],
         );
         assert_eq!(lt_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(lt(&array1, &array2).unwrap(), expected);
 
         let expected = BooleanArray::from(
             vec![Some(true), Some(true), Some(true), Some(true), Some(false), Some(false)],
         );
         assert_eq!(lt_eq_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(lt_eq(&array1, &array2).unwrap(), expected);
 
         let array1: Float32Array = vec![f32::NAN, 7.0, 8.0, 8.0, 11.0, f32::NAN]
@@ -5085,16 +4925,12 @@ mod tests {
             vec![Some(false), Some(true), Some(false), Some(true), Some(false), Some(false)],
         );
         assert_eq!(lt_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(lt(&array1, &array2).unwrap(), expected);
 
         let expected = BooleanArray::from(
             vec![Some(true), Some(true), Some(true), Some(true), Some(false), Some(false)],
         );
         assert_eq!(lt_eq_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(lt_eq(&array1, &array2).unwrap(), expected);
 
         let array1: Float64Array = vec![f64::NAN, 7.0, 8.0, 8.0, 11.0, f64::NAN]
@@ -5110,16 +4946,12 @@ mod tests {
             vec![Some(false), Some(true), Some(false), Some(true), Some(false), Some(false)],
         );
         assert_eq!(lt_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(lt(&array1, &array2).unwrap(), expected);
 
         let expected = BooleanArray::from(
             vec![Some(true), Some(true), Some(true), Some(true), Some(false), Some(false)],
         );
         assert_eq!(lt_eq_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(lt_eq(&array1, &array2).unwrap(), expected);
     }
 
@@ -5138,16 +4970,12 @@ mod tests {
             vec![Some(false), Some(false), Some(false), Some(false), Some(true), Some(true)],
         );
         assert_eq!(gt_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(gt(&array1, &array2).unwrap(), expected);
 
         let expected = BooleanArray::from(
             vec![Some(true), Some(false), Some(true), Some(false), Some(true), Some(true)],
         );
         assert_eq!(gt_eq_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(gt_eq(&array1, &array2).unwrap(), expected);
 
         let array1: Float32Array = vec![f32::NAN, 7.0, 8.0, 8.0, 11.0, f32::NAN]
@@ -5163,16 +4991,12 @@ mod tests {
             vec![Some(false), Some(false), Some(false), Some(false), Some(true), Some(true)],
         );
         assert_eq!(gt_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(gt(&array1, &array2).unwrap(), expected);
 
         let expected = BooleanArray::from(
             vec![Some(true), Some(false), Some(true), Some(false), Some(true), Some(true)],
         );
         assert_eq!(gt_eq_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(gt_eq(&array1, &array2).unwrap(), expected);
 
         let array1: Float64Array = vec![f64::NAN, 7.0, 8.0, 8.0, 11.0, f64::NAN]
@@ -5188,16 +5012,12 @@ mod tests {
             vec![Some(false), Some(false), Some(false), Some(false), Some(true), Some(true)],
         );
         assert_eq!(gt_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(gt(&array1, &array2).unwrap(), expected);
 
         let expected = BooleanArray::from(
             vec![Some(true), Some(false), Some(true), Some(false), Some(true), Some(true)],
         );
         assert_eq!(gt_eq_dyn(&array1, &array2).unwrap(), expected);
-
-        #[cfg(not(feature = "simd"))]
         assert_eq!(gt_eq(&array1, &array2).unwrap(), expected);
     }
 
@@ -5207,21 +5027,11 @@ mod tests {
             .into_iter()
             .map(Some)
             .collect();
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(true), Some(false), Some(false), Some(false), Some(false)],
         );
         assert_eq!(eq_dyn_scalar(&array, f32::NAN).unwrap(), expected);
 
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(true), Some(true), Some(true), Some(true), Some(true)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(false), Some(true), Some(true), Some(true), Some(true)],
         );
@@ -5231,21 +5041,10 @@ mod tests {
             .into_iter()
             .map(Some)
             .collect();
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(true), Some(false), Some(false), Some(false), Some(false)],
         );
         assert_eq!(eq_dyn_scalar(&array, f32::NAN).unwrap(), expected);
-
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(true), Some(true), Some(true), Some(true), Some(true)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(false), Some(true), Some(true), Some(true), Some(true)],
         );
@@ -5255,21 +5054,10 @@ mod tests {
             .into_iter()
             .map(Some)
             .collect();
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(true), Some(false), Some(false), Some(false), Some(false)],
         );
         assert_eq!(eq_dyn_scalar(&array, f64::NAN).unwrap(), expected);
-
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(true), Some(true), Some(true), Some(true), Some(true)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(false), Some(true), Some(true), Some(true), Some(true)],
         );
@@ -5282,21 +5070,11 @@ mod tests {
             .into_iter()
             .map(Some)
             .collect();
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(false), Some(true), Some(true), Some(true), Some(true)],
         );
         assert_eq!(lt_dyn_scalar(&array, f16::NAN).unwrap(), expected);
 
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(true), Some(true), Some(true), Some(true), Some(true)],
         );
@@ -5306,21 +5084,11 @@ mod tests {
             .into_iter()
             .map(Some)
             .collect();
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(false), Some(true), Some(true), Some(true), Some(true)],
         );
         assert_eq!(lt_dyn_scalar(&array, f32::NAN).unwrap(), expected);
 
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(true), Some(true), Some(true), Some(true), Some(true)],
         );
@@ -5330,21 +5098,11 @@ mod tests {
             .into_iter()
             .map(Some)
             .collect();
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(false), Some(true), Some(true), Some(true), Some(true)],
         );
         assert_eq!(lt_dyn_scalar(&array, f64::NAN).unwrap(), expected);
 
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(true), Some(true), Some(true), Some(true), Some(true)],
         );
@@ -5361,12 +5119,6 @@ mod tests {
             vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
         );
         assert_eq!(gt_dyn_scalar(&array, f16::NAN).unwrap(), expected);
-
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(true), Some(false), Some(false), Some(false), Some(false)],
         );
@@ -5381,11 +5133,6 @@ mod tests {
         );
         assert_eq!(gt_dyn_scalar(&array, f32::NAN).unwrap(), expected);
 
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(true), Some(false), Some(false), Some(false), Some(false)],
         );
@@ -5400,11 +5147,6 @@ mod tests {
         );
         assert_eq!(gt_dyn_scalar(&array, f64::NAN).unwrap(), expected);
 
-        #[cfg(feature = "simd")]
-        let expected = BooleanArray::from(
-            vec![Some(false), Some(false), Some(false), Some(false), Some(false)],
-        );
-        #[cfg(not(feature = "simd"))]
         let expected = BooleanArray::from(
             vec![Some(true), Some(false), Some(false), Some(false), Some(false)],
         );
@@ -6317,7 +6059,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "simd"))]
     fn test_floating_zeros() {
         let a = Float32Array::from(vec![0.0_f32, -0.0]);
         let b = Float32Array::from(vec![-0.0_f32, 0.0]);
