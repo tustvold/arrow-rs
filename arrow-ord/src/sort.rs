@@ -30,6 +30,7 @@ use arrow_select::take::take;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
+use crate::rank::rank;
 pub use arrow_schema::SortOptions;
 
 /// Sort the `ArrayRef` using `SortOptions`.
@@ -169,7 +170,7 @@ pub fn sort_limit(
 
 /// we can only do this if the T is primitive
 #[inline]
-fn sort_unstable_by<T, F>(array: &mut [T], limit: usize, cmp: F)
+fn sort_unstable<T, F>(array: &mut [T], limit: usize, cmp: F)
 where
     F: FnMut(&T, &T) -> Ordering,
 {
@@ -177,18 +178,6 @@ where
         array.sort_unstable_by(cmp);
     } else {
         partial_sort(array, limit, cmp);
-    }
-}
-
-// partition indices into valid and null indices
-fn partition_validity(array: &dyn Array) -> (Vec<u32>, Vec<u32>) {
-    match array.null_count() {
-        // faster path
-        0 => ((0..(array.len() as u32)).collect(), vec![]),
-        _ => {
-            let indices = 0..(array.len() as u32);
-            indices.partition(|index| array.is_valid(*index as usize))
-        }
     }
 }
 
@@ -200,23 +189,28 @@ pub fn sort_to_indices(
     options: Option<SortOptions>,
     limit: Option<usize>,
 ) -> Result<UInt32Array, ArrowError> {
+    if array.len() > u32::MAX as usize {
+        return Err(ArrowError::ComputeError(format!(
+            "Array of length {} would exceed maximum index",
+            array.len()
+        )));
+    }
+
     let options = options.unwrap_or_default();
 
-    let (v, n) = partition_validity(array);
-
     Ok(downcast_primitive_array! {
-        array => sort_primitive(array, v, n, options, limit),
-        DataType::Boolean => sort_boolean(array.as_boolean(), v, n, options, limit),
-        DataType::Utf8 => sort_bytes(array.as_string::<i32>(), v, n, options, limit),
-        DataType::LargeUtf8 => sort_bytes(array.as_string::<i64>(), v, n, options, limit),
-        DataType::Binary => sort_bytes(array.as_binary::<i32>(), v, n, options, limit),
-        DataType::LargeBinary => sort_bytes(array.as_binary::<i64>(), v, n, options, limit),
-        DataType::FixedSizeBinary(_) => sort_fixed_size_binary(array.as_fixed_size_binary(), v, n, options, limit),
-        DataType::List(_) => sort_list(array.as_list::<i32>(), v, n, options, limit)?,
-        DataType::LargeList(_) => sort_list(array.as_list::<i64>(), v, n, options, limit)?,
-        DataType::FixedSizeList(_, _) => sort_fixed_size_list(array.as_fixed_size_list(), v, n, options, limit)?,
+        array => sort_primitive(array, options, limit),
+        DataType::Boolean => sort_boolean(array.as_boolean(), options, limit),
+        DataType::Utf8 => sort_bytes(array.as_string::<i32>(), options, limit),
+        DataType::LargeUtf8 => sort_bytes(array.as_string::<i64>(), options, limit),
+        DataType::Binary => sort_bytes(array.as_binary::<i32>(), options, limit),
+        DataType::LargeBinary => sort_bytes(array.as_binary::<i64>(), options, limit),
+        DataType::FixedSizeBinary(_) => sort_fixed_size_binary(array.as_fixed_size_binary(), options, limit),
+        DataType::List(_) => sort_list(array.as_list::<i32>(), options, limit)?,
+        DataType::LargeList(_) => sort_list(array.as_list::<i64>(), options, limit)?,
+        DataType::FixedSizeList(_, _) => sort_fixed_size_list(array.as_fixed_size_list(), options, limit)?,
         DataType::Dictionary(_, _) => downcast_dictionary_array!{
-            array => sort_dictionary(array, v, n, options, limit)?,
+            array => sort_dictionary(array, options, limit)?,
             _ => unreachable!()
         }
         DataType::RunEndEncoded(run_ends_field, _) => match run_ends_field.data_type() {
@@ -237,123 +231,138 @@ pub fn sort_to_indices(
     })
 }
 
+#[inline(never)]
+fn partition_valid<T: Copy + ?Sized, F: Fn(usize) -> T>(
+    len: usize,
+    nulls: Option<&NullBuffer>,
+    v: F,
+) -> (Vec<(u32, T)>, Vec<u32>) {
+    match nulls.filter(|n| n.null_count() > 0) {
+        Some(n) => {
+            assert_eq!(len, n.len());
+            let mut valids = Vec::with_capacity(len - n.null_count());
+            let mut nulls = Vec::with_capacity(n.null_count());
+            (0..len).for_each(|idx| match n.is_valid(idx) {
+                true => valids.push((idx as u32, v(idx))),
+                false => nulls.push(idx as u32),
+            });
+            (valids, nulls)
+        }
+        None => {
+            let valid = (0..len).map(|idx| (idx as u32, v(idx))).collect();
+            (valid, vec![])
+        }
+    }
+}
+
 fn sort_boolean(
     values: &BooleanArray,
-    value_indices: Vec<u32>,
-    null_indices: Vec<u32>,
     options: SortOptions,
     limit: Option<usize>,
 ) -> UInt32Array {
-    let mut valids = value_indices
-        .into_iter()
-        .map(|index| (index, values.value(index as usize)))
-        .collect::<Vec<(u32, bool)>>();
-    sort_impl(options, &mut valids, &null_indices, limit, |a, b| a.cmp(&b)).into()
+    let (mut valids, nulls) =
+        partition_valid(values.len(), values.nulls(), |idx| values.value(idx));
+    sort_impl(options, &mut valids, &nulls, limit, |a, b| a.cmp(&b)).into()
 }
 
 fn sort_primitive<T: ArrowPrimitiveType>(
     values: &PrimitiveArray<T>,
-    value_indices: Vec<u32>,
-    nulls: Vec<u32>,
     options: SortOptions,
     limit: Option<usize>,
 ) -> UInt32Array {
-    let mut valids = value_indices
-        .into_iter()
-        .map(|index| (index, values.value(index as usize)))
-        .collect::<Vec<(u32, T::Native)>>();
+    let v = values.values();
+    let (mut valids, nulls) = partition_valid(values.len(), values.nulls(), |idx| v[idx]);
     sort_impl(options, &mut valids, &nulls, limit, T::Native::compare).into()
 }
 
 fn sort_bytes<T: ByteArrayType>(
     values: &GenericByteArray<T>,
-    value_indices: Vec<u32>,
-    nulls: Vec<u32>,
     options: SortOptions,
     limit: Option<usize>,
 ) -> UInt32Array {
-    let mut valids = value_indices
-        .into_iter()
-        .map(|index| (index, values.value(index as usize).as_ref()))
-        .collect::<Vec<(u32, &[u8])>>();
-
+    let (mut valids, nulls) =
+        partition_valid::<&[u8], _>(values.len(), values.nulls(), |idx| {
+            values.value(idx).as_ref()
+        });
     sort_impl(options, &mut valids, &nulls, limit, Ord::cmp).into()
 }
 
 fn sort_fixed_size_binary(
     values: &FixedSizeBinaryArray,
-    value_indices: Vec<u32>,
-    nulls: Vec<u32>,
     options: SortOptions,
     limit: Option<usize>,
 ) -> UInt32Array {
-    let mut valids = value_indices
-        .iter()
-        .copied()
-        .map(|index| (index, values.value(index as usize)))
-        .collect::<Vec<(u32, &[u8])>>();
+    let (mut valids, nulls) =
+        partition_valid::<&[u8], _>(values.len(), values.nulls(), |idx| {
+            values.value(idx)
+        });
     sort_impl(options, &mut valids, &nulls, limit, Ord::cmp).into()
 }
 
 fn sort_dictionary<K: ArrowDictionaryKeyType>(
     dict: &DictionaryArray<K>,
-    value_indices: Vec<u32>,
-    null_indices: Vec<u32>,
     options: SortOptions,
     limit: Option<usize>,
 ) -> Result<UInt32Array, ArrowError> {
     let keys: &PrimitiveArray<K> = dict.keys();
     let rank = child_rank(dict.values().as_ref(), options)?;
 
-    // create tuples that are used for sorting
-    let mut valids = value_indices
-        .into_iter()
-        .map(|index| {
-            let key: K::Native = keys.value(index as usize);
-            (index, rank[key.as_usize()])
-        })
-        .collect::<Vec<(u32, u32)>>();
+    // If both values and keys contain nulls we need to exclude nulls from both
+    // in order for the sort to be stable, otherwise nulls in the values would be
+    // ordered with respect to nulls from the keys
+    let keys_nulls = keys.nulls().filter(|x| x.null_count() > 0);
+    let value_nulls = dict.values().nulls().filter(|x| x.null_count() > 0);
+    let (mut valids, nulls) = match (keys_nulls, value_nulls) {
+        (Some(kn), Some(kv)) => {
+            let mut valids = Vec::with_capacity(dict.len());
+            let mut nulls = Vec::with_capacity(dict.len());
+            (0..dict.len()).for_each(|idx| {
+                if kn.is_valid(idx) {
+                    let key = keys.value(idx).as_usize();
+                    if kv.is_valid(key) {
+                        valids.push((idx as u32, rank[key]));
+                        return;
+                    }
+                }
+                nulls.push(idx as u32)
+            });
+            (valids, nulls)
+        }
+        _ => partition_valid(dict.len(), keys_nulls, |idx| {
+            rank[keys.value(idx).as_usize()]
+        }),
+    };
 
-    Ok(sort_impl(options, &mut valids, &null_indices, limit, |a, b| a.cmp(&b)).into())
+    Ok(sort_impl(options, &mut valids, &nulls, limit, |a, b| a.cmp(&b)).into())
 }
 
 fn sort_list<O: OffsetSizeTrait>(
     array: &GenericListArray<O>,
-    value_indices: Vec<u32>,
-    null_indices: Vec<u32>,
     options: SortOptions,
     limit: Option<usize>,
 ) -> Result<UInt32Array, ArrowError> {
     let rank = child_rank(array.values().as_ref(), options)?;
     let offsets = array.value_offsets();
-    let mut valids = value_indices
-        .into_iter()
-        .map(|index| {
-            let end = offsets[index as usize + 1].as_usize();
-            let start = offsets[index as usize].as_usize();
-            (index, &rank[start..end])
-        })
-        .collect::<Vec<(u32, &[u32])>>();
-    Ok(sort_impl(options, &mut valids, &null_indices, limit, Ord::cmp).into())
+    let (mut valids, nulls) = partition_valid(array.len(), array.nulls(), |idx| {
+        let end = offsets[idx + 1].as_usize();
+        let start = offsets[idx].as_usize();
+        &rank[start..end]
+    });
+    Ok(sort_impl(options, &mut valids, &nulls, limit, Ord::cmp).into())
 }
 
 fn sort_fixed_size_list(
     array: &FixedSizeListArray,
-    value_indices: Vec<u32>,
-    null_indices: Vec<u32>,
     options: SortOptions,
     limit: Option<usize>,
 ) -> Result<UInt32Array, ArrowError> {
     let rank = child_rank(array.values().as_ref(), options)?;
     let size = array.value_length() as usize;
-    let mut valids = value_indices
-        .into_iter()
-        .map(|index| {
-            let start = index as usize * size;
-            (index, &rank[start..start + size])
-        })
-        .collect::<Vec<(u32, &[u32])>>();
-    Ok(sort_impl(options, &mut valids, &null_indices, limit, Ord::cmp).into())
+    let (mut valids, nulls) = partition_valid(array.len(), array.nulls(), |idx| {
+        let start = idx * size;
+        &rank[start..start + size]
+    });
+    Ok(sort_impl(options, &mut valids, &nulls, limit, Ord::cmp).into())
 }
 
 #[inline(never)]
@@ -370,8 +379,10 @@ fn sort_impl<T: ?Sized + Copy>(
     };
 
     match options.descending {
-        false => sort_unstable_by(valids, v_limit, |a, b| cmp(a.1, b.1)),
-        true => sort_unstable_by(valids, v_limit, |a, b| cmp(a.1, b.1).reverse()),
+        false => sort_unstable(valids, v_limit, |a, b| cmp(a.1, b.1).then(a.0.cmp(&b.0))),
+        true => sort_unstable(valids, v_limit, |a, b| {
+            cmp(a.1, b.1).reverse().then(a.0.cmp(&b.0))
+        }),
     }
 
     let len = valids.len() + nulls.len();
@@ -400,14 +411,7 @@ fn child_rank(values: &dyn Array, options: SortOptions) -> Result<Vec<u32>, Arro
         descending: false,
         nulls_first: options.nulls_first != options.descending,
     });
-
-    let sorted_value_indices = sort_to_indices(values, value_options, None)?;
-    let sorted_indices = sorted_value_indices.values();
-    let mut out: Vec<_> = vec![0_u32; sorted_indices.len()];
-    for (ix, val) in sorted_indices.iter().enumerate() {
-        out[*val as usize] = ix as u32;
-    }
-    Ok(out)
+    rank(values, value_options)
 }
 
 // Sort run array and return sorted run array.
@@ -699,7 +703,7 @@ pub fn lexsort_to_indices(
 
     let lexicographical_comparator = LexicographicalComparator::try_new(columns)?;
     // uint32 can be sorted unstably
-    sort_unstable_by(&mut value_indices, len, |a, b| {
+    sort_unstable(&mut value_indices, len, |a, b| {
         lexicographical_comparator.compare(*a, *b)
     });
 
@@ -4015,5 +4019,99 @@ mod tests {
             None,
             vec![None, None, None, Some(5.1), Some(5.1), Some(3.0), Some(1.2)],
         );
+    }
+
+    #[test]
+    fn test_stability() {
+        let descending = SortOptions {
+            descending: true,
+            nulls_first: true,
+        };
+
+        let nulls_last = SortOptions {
+            descending: false,
+            nulls_first: false,
+        };
+
+        let nulls_last_descending = SortOptions {
+            descending: true,
+            nulls_first: false,
+        };
+
+        let values = (0..50).map(|x| x % 2).collect::<Vec<_>>();
+        let a = PrimitiveArray::<Int32Type>::from(values);
+        let r = sort_to_indices(&a, None, None).unwrap();
+        let expected: Vec<_> = (0..50).step_by(2).chain((1..50).step_by(2)).collect();
+        assert_eq!(r.values(), &expected);
+
+        let r = sort_to_indices(&a, Some(descending), None).unwrap();
+        let expected: Vec<_> = (1..50).step_by(2).chain((0..50).step_by(2)).collect();
+        assert_eq!(r.values(), &expected);
+
+        let nulls = (0..50).map(|x| x % 4 != 0).collect();
+        let a = Int32Array::new(a.values().clone(), Some(nulls));
+        let r = sort_to_indices(&a, None, None).unwrap();
+        let n = (0..50).filter(|x| x % 4 == 0);
+        let v1 = (0..50).step_by(2).filter(|x| x % 4 != 0);
+        let v2 = (1..50).step_by(2).filter(|x| x % 4 != 0);
+        let expected: Vec<_> = n.clone().chain(v1.clone()).chain(v2.clone()).collect();
+        assert_eq!(r.values(), &expected);
+
+        let r = sort_to_indices(&a, Some(descending), None).unwrap();
+        let expected: Vec<_> = n.clone().chain(v2.clone()).chain(v1.clone()).collect();
+        assert_eq!(r.values(), &expected);
+
+        let r = sort_to_indices(&a, Some(nulls_last), None).unwrap();
+        let expected: Vec<_> = v1.clone().chain(v2.clone()).chain(n.clone()).collect();
+        assert_eq!(r.values(), &expected);
+
+        let r = sort_to_indices(&a, Some(nulls_last_descending), None).unwrap();
+        let expected: Vec<_> = v2.clone().chain(v1.clone()).chain(n.clone()).collect();
+        assert_eq!(r.values(), &expected);
+
+        let nulls = NullBuffer::from(vec![
+            true, true, false, true, true, true, false, true, true,
+        ]);
+        let values = Int32Array::new(vec![1, 2, 3, 1, 2, 3, 1, 2, 3].into(), Some(nulls));
+        let keys = Int32Array::from(vec![0, 1, 7, 3, 6, 8, 2, 6, 8, 4, 1, 8, 6, 3, 6]);
+        let a = DictionaryArray::new(keys, Arc::new(values));
+        // [1, 2, 2, 1, NULL, 3, NULL, NULL, 3, 2, 2, 3, NULL, 1, NULL]
+        let r = sort_to_indices(&a, None, None).unwrap();
+        let expected = vec![4, 6, 7, 12, 14, 0, 3, 13, 1, 2, 9, 10, 5, 8, 11];
+        assert_eq!(r.values(), &expected);
+
+        let r = sort_to_indices(&a, Some(nulls_last), None).unwrap();
+        let expected = vec![0, 3, 13, 1, 2, 9, 10, 5, 8, 11, 4, 6, 7, 12, 14];
+        assert_eq!(r.values(), &expected);
+
+        let r = sort_to_indices(&a, Some(nulls_last_descending), None).unwrap();
+        let expected = vec![5, 8, 11, 1, 2, 9, 10, 0, 3, 13, 4, 6, 7, 12, 14];
+        assert_eq!(r.values(), &expected);
+
+        let r = sort_to_indices(&a, Some(descending), None).unwrap();
+        let expected = vec![4, 6, 7, 12, 14, 5, 8, 11, 1, 2, 9, 10, 0, 3, 13];
+        assert_eq!(r.values(), &expected);
+
+        let nulls = NullBuffer::from(vec![true, true, false]);
+        let values = Int32Array::new(vec![1, 2, 3].into(), Some(nulls));
+        let nulls = NullBuffer::from(vec![true, true, false, false, true]);
+        let keys = Int32Array::new(vec![2, 0, 0, 1, 1].into(), Some(nulls));
+        let a = DictionaryArray::new(keys, Arc::new(values));
+        // [NULL, 1, NULL, NULL, 2]
+        let r = sort_to_indices(&a, None, None).unwrap();
+        let expected = vec![0, 2, 3, 1, 4];
+        assert_eq!(r.values(), &expected);
+
+        let r = sort_to_indices(&a, Some(nulls_last), None).unwrap();
+        let expected = vec![1, 4, 0, 2, 3];
+        assert_eq!(r.values(), &expected);
+
+        let r = sort_to_indices(&a, Some(nulls_last_descending), None).unwrap();
+        let expected = vec![4, 1, 0, 2, 3];
+        assert_eq!(r.values(), &expected);
+
+        let r = sort_to_indices(&a, Some(descending), None).unwrap();
+        let expected = vec![0, 2, 3, 4, 1];
+        assert_eq!(r.values(), &expected);
     }
 }
