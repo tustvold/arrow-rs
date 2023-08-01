@@ -18,6 +18,7 @@
 //! Defines sort kernel for `ArrayRef`
 
 use crate::ord::{build_compare, DynComparator};
+use crate::rank::rank;
 use arrow_array::builder::BufferBuilder;
 use arrow_array::cast::*;
 use arrow_array::types::*;
@@ -392,9 +393,7 @@ pub fn sort_to_indices(
             });
             downcast_dictionary_array! {
                 values => {
-                    let dict_values = values.values();
-                    let sorted_value_indices = sort_to_indices(dict_values, value_options, None)?;
-                    let rank = sorted_rank(&sorted_value_indices);
+                    let rank = rank(values.values(), value_options)?;
                     sort_dictionary(values, &rank, v, n, options, limit)
                 }
                 _ => unreachable!(),
@@ -534,20 +533,6 @@ where
             .collect::<Vec<(u32, T::Native)>>()
     };
     sort_primitive_inner(values.len(), null_indices, cmp, options, limit, valids)
-}
-
-/// Given a list of indices that yield a sorted order, returns the ordered
-/// rank of each index
-///
-/// e.g. [2, 4, 3, 1, 0] -> [4, 3, 0, 2, 1]
-fn sorted_rank(sorted_value_indices: &UInt32Array) -> Vec<u32> {
-    assert_eq!(sorted_value_indices.null_count(), 0);
-    let sorted_indices = sorted_value_indices.values();
-    let mut out: Vec<_> = vec![0_u32; sorted_indices.len()];
-    for (ix, val) in sorted_indices.iter().enumerate() {
-        out[*val as usize] = ix as u32;
-    }
-    out
 }
 
 /// Sort dictionary given the sorted rank of each key
