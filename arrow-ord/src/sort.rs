@@ -684,28 +684,47 @@ pub fn lexsort_to_indices(
     }
 
     let row_count = columns[0].values.len();
-    if columns.iter().any(|item| item.values.len() != row_count) {
+    if columns
+        .iter()
+        .skip(1)
+        .any(|item| item.values.len() != row_count)
+    {
         return Err(ArrowError::ComputeError(
             "lexical sort columns have different row counts".to_string(),
         ));
     };
 
-    let mut value_indices = (0..row_count).collect::<Vec<usize>>();
-    let mut len = value_indices.len();
+    let ranks = columns
+        .iter()
+        .map(|x| {
+            let sorted_value_indices =
+                sort_to_indices(x.values.as_ref(), x.options, None)?;
+            let sorted_indices = sorted_value_indices.values();
+            let mut out: Vec<_> = vec![0_u32; sorted_indices.len()];
+            for (ix, val) in sorted_indices.iter().enumerate() {
+                out[*val as usize] = ix as u32;
+            }
+            Ok(out)
+        })
+        .collect::<Result<Vec<_>, ArrowError>>()?;
 
+    let mut len = row_count;
     if let Some(limit) = limit {
         len = limit.min(len);
     }
 
-    let lexicographical_comparator = LexicographicalComparator::try_new(columns)?;
-    // uint32 can be sorted unstably
-    sort_unstable_by(&mut value_indices, len, |a, b| {
-        lexicographical_comparator.compare(*a, *b)
+    let mut indices = (0..row_count as u32).collect::<Vec<u32>>();
+    sort_unstable_by(&mut indices, len, |a, b| {
+        for r in &ranks {
+            let compare = r[*a as usize].cmp(&r[*b as usize]);
+            if !compare.is_eq() {
+                return compare;
+            }
+        }
+        Ordering::Equal
     });
 
-    Ok(UInt32Array::from_iter_values(
-        value_indices.iter().take(len).map(|i| *i as u32),
-    ))
+    Ok(UInt32Array::from(indices).slice(0, len))
 }
 
 /// It's unstable_sort, may not preserve the order of equal elements
