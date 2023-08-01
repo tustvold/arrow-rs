@@ -64,8 +64,16 @@ fn primitive_rank<T: ArrowNativeTypeOp>(
         values.len(),
         to_sort,
         options,
-        |a, b| values[a as usize].compare(values[b as usize]),
-        |a, b| values[a as usize].is_eq(values[b as usize]),
+        |a, b| unsafe {
+            values
+                .get_unchecked(a as usize)
+                .compare(*values.get_unchecked(b as usize))
+        },
+        |a, b| unsafe {
+            values
+                .get_unchecked(a as usize)
+                .is_eq(*values.get_unchecked(b as usize))
+        },
     )
 }
 
