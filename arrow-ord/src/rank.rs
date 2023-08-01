@@ -57,45 +57,56 @@ fn primitive_rank<T: ArrowNativeTypeOp>(
 ) -> Vec<u32> {
     let len: u32 = values.len().try_into().unwrap();
     let to_sort = match nulls.filter(|n| n.null_count() > 0) {
-        Some(n) => n
-            .valid_indices()
-            .map(|idx| (values[idx], idx as u32))
-            .collect(),
-        None => values.iter().copied().zip(0..len).collect(),
+        Some(n) => n.valid_indices().map(|idx| (idx as u32)).collect(),
+        None => (0..len).collect(),
     };
-    rank_impl(values.len(), to_sort, options, T::compare, T::is_eq)
+    rank_impl(
+        values.len(),
+        to_sort,
+        options,
+        |a, b| values[a as usize].compare(values[b as usize]),
+        |a, b| values[a as usize].is_eq(values[b as usize]),
+    )
 }
 
 fn bytes_rank<T: ByteArrayType>(
     array: &GenericByteArray<T>,
     options: SortOptions,
 ) -> Vec<u32> {
-    let to_sort: Vec<(&[u8], u32)> = match array.nulls().filter(|n| n.null_count() > 0) {
-        Some(n) => n
-            .valid_indices()
-            .map(|idx| (array.value(idx).as_ref(), idx as u32))
-            .collect(),
-        None => (0..array.len())
-            .map(|idx| (array.value(idx).as_ref(), idx as u32))
-            .collect(),
+    let to_sort: Vec<u32> = match array.nulls().filter(|n| n.null_count() > 0) {
+        Some(n) => n.valid_indices().map(|idx| (idx as u32)).collect(),
+        None => (0..array.len()).map(|idx| (idx as u32)).collect(),
     };
-    rank_impl(array.len(), to_sort, options, Ord::cmp, PartialEq::eq)
+    rank_impl(
+        array.len(),
+        to_sort,
+        options,
+        |a, b| {
+            let a: &[u8] = array.value(a as usize).as_ref();
+            let b: &[u8] = array.value(b as usize).as_ref();
+            a.cmp(b)
+        },
+        |a, b| {
+            let a: &[u8] = array.value(a as usize).as_ref();
+            let b: &[u8] = array.value(b as usize).as_ref();
+            a == b
+        },
+    )
 }
 
-fn rank_impl<T, C, E>(
+fn rank_impl<C, E>(
     len: usize,
-    mut valid: Vec<(T, u32)>,
+    mut valid: Vec<u32>,
     options: SortOptions,
     compare: C,
     eq: E,
 ) -> Vec<u32>
 where
-    T: Copy,
-    C: Fn(T, T) -> Ordering,
-    E: Fn(T, T) -> bool,
+    C: Fn(u32, u32) -> Ordering,
+    E: Fn(u32, u32) -> bool,
 {
     // We can use an unstable sort as we combine equal values later
-    valid.sort_unstable_by(|a, b| compare(a.0, b.0));
+    valid.sort_unstable_by(|a, b| compare(*a, *b));
     if options.descending {
         valid.reverse();
     }
@@ -107,20 +118,20 @@ where
 
     let mut out: Vec<_> = vec![null_rank; len];
     if let Some(v) = valid.last() {
-        out[v.1 as usize] = valid_rank;
+        out[*v as usize] = valid_rank;
     }
 
     let mut count = 1; // Number of values in rank
     for w in valid.windows(2).rev() {
-        match eq(w[0].0, w[1].0) {
+        match eq(w[0], w[1]) {
             true => {
                 count += 1;
-                out[w[0].1 as usize] = valid_rank;
+                out[w[0] as usize] = valid_rank;
             }
             false => {
                 valid_rank -= count;
                 count = 1;
-                out[w[0].1 as usize] = valid_rank
+                out[w[0] as usize] = valid_rank
             }
         }
     }
