@@ -234,6 +234,22 @@ impl i256 {
         })
     }
 
+    pub fn from_bigint(v: &BigInt) -> Option<Self> {
+        let v_bytes = v.to_signed_bytes_le();
+        match v_bytes.len().cmp(&32) {
+            Ordering::Less => {
+                let mut bytes = match num::Signed::is_negative(v) {
+                    true => [255_u8; 32],
+                    false => [0; 32],
+                };
+                bytes[0..v_bytes.len()].copy_from_slice(&v_bytes[..v_bytes.len()]);
+                Some(Self::from_le_bytes(bytes))
+            }
+            Ordering::Equal => Some(Self::from_le_bytes(v_bytes.try_into().unwrap())),
+            Ordering::Greater => None,
+        }
+    }
+
     /// Create an i256 from the provided low u128 and high i128
     #[inline]
     pub const fn from_parts(low: u128, high: i128) -> Self {
@@ -298,10 +314,9 @@ impl i256 {
         let v_bytes = v.to_signed_bytes_le();
         match v_bytes.len().cmp(&32) {
             Ordering::Less => {
-                let mut bytes = if num::Signed::is_negative(&v) {
-                    [255_u8; 32]
-                } else {
-                    [0; 32]
+                let mut bytes = match num::Signed::is_negative(&v) {
+                    true => [255_u8; 32],
+                    false => [0; 32],
                 };
                 bytes[0..v_bytes.len()].copy_from_slice(&v_bytes[..v_bytes.len()]);
                 (Self::from_le_bytes(bytes), false)

@@ -17,6 +17,9 @@
 
 //! Defines numeric arithmetic kernels on [`PrimitiveArray`], such as [`add`]
 
+use num::bigint::Sign;
+use num::BigInt;
+use std::cmp::Ordering;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
@@ -24,6 +27,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::timezone::Tz;
 use arrow_array::types::*;
 use arrow_array::*;
+use arrow_buffer::{i256, ArrowNativeType};
 use arrow_schema::{ArrowError, DataType, IntervalUnit, TimeUnit};
 
 use crate::arity::{binary, try_binary};
@@ -717,34 +721,81 @@ fn date_op<T: DateOp>(
     }
 }
 
-fn clamp_precision<T: DecimalType>(precision: i32, scale: i32) -> (u8, i8) {
+/// Adjust decimal scale if needed
+///
+/// <https://github.com/apache/arrow/blob/36ddbb531cac9b9e512dfa3776d1d64db588209f/java/gandiva/src/main/java/org/apache/arrow/gandiva/evaluator/DecimalTypeUtil.java#L83>
+fn adjust_scale<T: DecimalType>(precision: i32, scale: i32) -> (u8, i32) {
     match precision > T::MAX_PRECISION as i32 {
         true => {
             let delta = precision - (T::MAX_PRECISION as i32);
             let scale = scale.min(6).max(scale - delta);
-            (T::MAX_PRECISION, scale as i8)
+            (T::MAX_PRECISION, scale)
         }
-        false => (precision as u8, scale as i8),
+        false => (precision as u8, scale),
     }
 }
 
-fn adjust_scale<T: DecimalType>(
-    a: &PrimitiveArray<T>,
-    scale: i8,
-) -> Result<PrimitiveArray<T>, ArrowError> {
-    todo!()
+trait ToDigits: Sized {
+    type Digits: AsRef<[u32]>;
+    fn to_digits(self) -> (Sign, Self::Digits);
+
+    fn from_bigint(b: &BigInt) -> Result<Self, ArrowError>;
 }
 
-/// Perform a fallible arithmetic operation on potentially scalar decimal inputs
-macro_rules! decimal_op {
-    ($l:ident, $l_s:expr, $r:ident, $r_s:expr, $rp:expr, $rs:expr, $op:expr) => {{
-        let (rp, rs) = clamp_precision::<T>($rp, $rs);
-        let $l = adjust_scale($l, rs)?;
-        let $r = adjust_scale($r, rs)?;
-        let $l = &$l;
-        let $r = &$r;
-        try_op!($l, $l_s, $r, $r_s, $op).with_precision_and_scale(rp, rs)?
-    }};
+impl ToDigits for i128 {
+    type Digits = [u32; 4];
+
+    fn to_digits(self) -> (Sign, Self::Digits) {
+        let sign = match self.cmp(&0) {
+            Ordering::Greater => Sign::Plus,
+            Ordering::Equal => Sign::NoSign,
+            Ordering::Less => Sign::Minus,
+        };
+        let b = self.wrapping_abs().to_le_bytes();
+        let d = [
+            u32::from_le_bytes(b[0..4].try_into().unwrap()),
+            u32::from_le_bytes(b[4..8].try_into().unwrap()),
+            u32::from_le_bytes(b[8..12].try_into().unwrap()),
+            u32::from_le_bytes(b[12..16].try_into().unwrap()),
+        ];
+        (sign, d)
+    }
+
+    fn from_bigint(b: &BigInt) -> Result<Self, ArrowError> {
+        i128::try_from(b).map_err(|_| {
+            ArrowError::ComputeError(format!("Overflow converting BigInt to i128: {b}"))
+        })
+    }
+}
+
+impl ToDigits for i256 {
+    type Digits = [u32; 8];
+
+    fn to_digits(self) -> (Sign, Self::Digits) {
+        let sign = match self.cmp(&i256::ZERO) {
+            Ordering::Greater => Sign::Plus,
+            Ordering::Equal => Sign::NoSign,
+            Ordering::Less => Sign::Minus,
+        };
+        let b = self.wrapping_abs().to_le_bytes();
+        let d = [
+            u32::from_le_bytes(b[0..4].try_into().unwrap()),
+            u32::from_le_bytes(b[4..8].try_into().unwrap()),
+            u32::from_le_bytes(b[8..12].try_into().unwrap()),
+            u32::from_le_bytes(b[12..16].try_into().unwrap()),
+            u32::from_le_bytes(b[16..20].try_into().unwrap()),
+            u32::from_le_bytes(b[20..24].try_into().unwrap()),
+            u32::from_le_bytes(b[24..28].try_into().unwrap()),
+            u32::from_le_bytes(b[28..32].try_into().unwrap()),
+        ];
+        (sign, d)
+    }
+
+    fn from_bigint(b: &BigInt) -> Result<Self, ArrowError> {
+        i256::from_bigint(b).ok_or_else(|| {
+            ArrowError::ComputeError(format!("Overflow converting BigInt to i256: {b}"))
+        })
+    }
 }
 
 /// Perform arithmetic operation on decimal arrays
@@ -754,7 +805,10 @@ fn decimal_op<T: DecimalType>(
     l_s: bool,
     r: &dyn Array,
     r_s: bool,
-) -> Result<ArrayRef, ArrowError> {
+) -> Result<ArrayRef, ArrowError>
+where
+    T::Native: ToDigits,
+{
     let l = l.as_primitive::<T>();
     let r = r.as_primitive::<T>();
 
@@ -772,9 +826,6 @@ fn decimal_op<T: DecimalType>(
     // https://cwiki.apache.org/confluence/download/attachments/27362075/Hive_Decimal_Precision_Scale_Support.pdf
     // And the Calcite rules
     // https://github.com/apache/arrow/blob/36ddbb531cac9b9e512dfa3776d1d64db588209f/java/gandiva/src/main/java/org/apache/arrow/gandiva/evaluator/DecimalTypeUtil.java#L46
-    //
-    // We opt to always use checked arithmetic as we don't consistently verify precision
-    // and i128 and i256 arithmetic doesn't get vectorised by LLVM regardless
     let array: PrimitiveArray<T> = match op {
         Op::Add | Op::AddWrapping | Op::Sub | Op::SubWrapping => {
             // max(s1, s2)
@@ -782,33 +833,86 @@ fn decimal_op<T: DecimalType>(
 
             // max(s1, s2) + max(p1-s1, p2-s2) + 1
             let rp = rs + (p1 - s1).max(p2 - s2) + 1;
+            let (p, s) = adjust_scale::<T>(rp, rs);
 
-            match op {
-                Op::Add | Op::AddWrapping => {
-                    decimal_op!(l, l_s, r, r_s, rp, rs, l.add_checked(r))
+            if s == rs {
+                let l_mul = T::Native::usize_as(10).pow_checked((rs - s1) as _)?;
+                let r_mul = T::Native::usize_as(10).pow_checked((rs - s2) as _)?;
+
+                match op {
+                    Op::Add | Op::AddWrapping => {
+                        try_op!(
+                            l,
+                            l_s,
+                            r,
+                            r_s,
+                            l.mul_checked(l_mul)?.add_checked(r.mul_checked(r_mul)?)
+                        )
+                    }
+                    Op::Sub | Op::SubWrapping => {
+                        try_op!(
+                            l,
+                            l_s,
+                            r,
+                            r_s,
+                            l.mul_checked(l_mul)?.sub_checked(r.mul_checked(r_mul)?)
+                        )
+                    }
+                    _ => unreachable!(),
                 }
-                Op::Sub | Op::SubWrapping => {
-                    decimal_op!(l, l_s, r, r_s, rp, rs, l.sub_checked(r))
-                }
-                _ => unreachable!(),
+            } else {
+                todo!()
             }
+            .with_precision_and_scale(p, s as _)?
         }
         Op::Mul | Op::MulWrapping => {
             let rp = p1 + p2 + 1;
             let rs = s1 + s2;
-            // TODO: Should we error if scale is too large??
-            decimal_op!(l, l_s, r, r_s, rp, rs, l.mul_checked(r))
+            let (p, s) = adjust_scale::<T>(rp, rs);
+            if s == rs {
+                try_op!(l, l_s, r, r_s, l.mul_checked(r))
+            } else {
+                todo!()
+            }
+            .with_precision_and_scale(p, s as _)?
         }
 
         Op::Div => {
             // max(6, s1 + p2 + 1)
             let rs = 6.max(s1 + p2 + 1);
-            let mul_pow = rs - s1 + s2;
 
-            // p1 - s1 + s2 + result_scale
-            let rp = mul_pow + p1;
+            // p1 - s1 + s2 + rs
+            let rp = p1 - s1 + s2 + rs;
+            let (p, s) = adjust_scale::<T>(rp, rs);
 
-            decimal_op!(l, l_s, r, r_s, rp, rs, l.div_checked(r))
+            let mul_pow = s - s1 + s2;
+
+            let (l_mul, r_mul) = match mul_pow.cmp(&0) {
+                Ordering::Greater => (Some(BigInt::from(10).pow(mul_pow as _)), None),
+                Ordering::Equal => (None, None),
+                Ordering::Less => (None, Some(BigInt::from(10).pow(mul_pow as _))),
+            };
+
+            let mut bl = BigInt::default();
+            let mut br = BigInt::default();
+
+            try_op!(l, l_s, r, r_s, {
+                let (s, d) = l.to_digits();
+                bl.assign_from_slice(s, d.as_ref());
+                let (s, d) = r.to_digits();
+                br.assign_from_slice(s, d.as_ref());
+                println!("{l:?} {bl:?} {r:?} {br:?}");
+                if let Some(l_mul) = &l_mul {
+                    bl *= l_mul
+                }
+                if let Some(r_mul) = &r_mul {
+                    br *= r_mul
+                }
+                bl /= &br;
+                println!("{l:?} * {l_mul:?} / {r:?} * {r_mul:?}= {bl}");
+                T::Native::from_bigint(&bl)
+            })
+            .with_precision_and_scale(p, s as _)?
         }
 
         Op::Rem => {
@@ -817,7 +921,22 @@ fn decimal_op<T: DecimalType>(
             // min(p1-s1, p2 -s2) + max( s1,s2 )
             let rp = rs + (p1 - s1) + (p2 - s2);
 
-            decimal_op!(l, l_s, r, r_s, rp, rs, l.mod_checked(r))
+            let l_mul = T::Native::usize_as(10).pow_wrapping((rs - s1) as _);
+            let r_mul = T::Native::usize_as(10).pow_wrapping((rs - s2) as _);
+
+            let (p, s) = adjust_scale::<T>(rp, rs);
+            if s == rs {
+                try_op!(
+                    l,
+                    l_s,
+                    r,
+                    r_s,
+                    l.mul_checked(l_mul)?.mod_checked(r.mul_checked(r_mul)?)
+                )
+            } else {
+                todo!()
+            }
+            .with_precision_and_scale(p, s as _)?
         }
     };
 

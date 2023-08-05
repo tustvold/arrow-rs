@@ -277,11 +277,11 @@ where
 pub fn try_binary<A: ArrayAccessor, B: ArrayAccessor, F, O>(
     a: A,
     b: B,
-    op: F,
+    mut op: F,
 ) -> Result<PrimitiveArray<O>, ArrowError>
 where
     O: ArrowPrimitiveType,
-    F: Fn(A::Item, B::Item) -> Result<O::Native, ArrowError>,
+    F: FnMut(A::Item, B::Item) -> Result<O::Native, ArrowError>,
 {
     if a.len() != b.len() {
         return Err(ArrowError::ComputeError(
@@ -383,11 +383,11 @@ fn try_binary_no_nulls<A: ArrayAccessor, B: ArrayAccessor, F, O>(
     len: usize,
     a: A,
     b: B,
-    op: F,
+    mut op: F,
 ) -> Result<PrimitiveArray<O>, ArrowError>
 where
     O: ArrowPrimitiveType,
-    F: Fn(A::Item, B::Item) -> Result<O::Native, ArrowError>,
+    F: FnMut (A::Item, B::Item) -> Result<O::Native, ArrowError>,
 {
     let mut buffer = MutableBuffer::new(len * O::get_byte_width());
     for idx in 0..len {
