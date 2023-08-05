@@ -17,7 +17,6 @@
 
 //! Defines numeric arithmetic kernels on [`PrimitiveArray`], such as [`add`]
 
-use std::cmp::Ordering;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
@@ -25,7 +24,6 @@ use arrow_array::cast::AsArray;
 use arrow_array::timezone::Tz;
 use arrow_array::types::*;
 use arrow_array::*;
-use arrow_buffer::ArrowNativeType;
 use arrow_schema::{ArrowError, DataType, IntervalUnit, TimeUnit};
 
 use crate::arity::{binary, try_binary};
@@ -719,6 +717,36 @@ fn date_op<T: DateOp>(
     }
 }
 
+fn clamp_precision<T: DecimalType>(precision: i32, scale: i32) -> (u8, i8) {
+    match precision > T::MAX_PRECISION as i32 {
+        true => {
+            let delta = precision - (T::MAX_PRECISION as i32);
+            let scale = scale.min(6).max(scale - delta);
+            (T::MAX_PRECISION, scale as i8)
+        }
+        false => (precision as u8, scale as i8),
+    }
+}
+
+fn adjust_scale<T: DecimalType>(
+    a: &PrimitiveArray<T>,
+    scale: i8,
+) -> Result<PrimitiveArray<T>, ArrowError> {
+    todo!()
+}
+
+/// Perform a fallible arithmetic operation on potentially scalar decimal inputs
+macro_rules! decimal_op {
+    ($l:ident, $l_s:expr, $r:ident, $r_s:expr, $rp:expr, $rs:expr, $op:expr) => {{
+        let (rp, rs) = clamp_precision::<T>($rp, $rs);
+        let $l = adjust_scale($l, rs)?;
+        let $r = adjust_scale($r, rs)?;
+        let $l = &$l;
+        let $r = &$r;
+        try_op!($l, $l_s, $r, $r_s, $op).with_precision_and_scale(rp, rs)?
+    }};
+}
+
 /// Perform arithmetic operation on decimal arrays
 fn decimal_op<T: DecimalType>(
     op: Op,
@@ -731,8 +759,12 @@ fn decimal_op<T: DecimalType>(
     let r = r.as_primitive::<T>();
 
     let (p1, s1, p2, s2) = match (l.data_type(), r.data_type()) {
-        (DataType::Decimal128(p1, s1), DataType::Decimal128(p2, s2)) => (p1, s1, p2, s2),
-        (DataType::Decimal256(p1, s1), DataType::Decimal256(p2, s2)) => (p1, s1, p2, s2),
+        (DataType::Decimal128(p1, s1), DataType::Decimal128(p2, s2)) => {
+            (*p1 as i32, *s1 as i32, *p2 as i32, *s2 as i32)
+        }
+        (DataType::Decimal256(p1, s1), DataType::Decimal256(p2, s2)) => {
+            (*p1 as i32, *s1 as i32, *p2 as i32, *s2 as i32)
+        }
         _ => unreachable!(),
     };
 
@@ -740,111 +772,52 @@ fn decimal_op<T: DecimalType>(
     // https://cwiki.apache.org/confluence/download/attachments/27362075/Hive_Decimal_Precision_Scale_Support.pdf
     // And the Calcite rules
     // https://github.com/apache/arrow/blob/36ddbb531cac9b9e512dfa3776d1d64db588209f/java/gandiva/src/main/java/org/apache/arrow/gandiva/evaluator/DecimalTypeUtil.java#L46
+    //
+    // We opt to always use checked arithmetic as we don't consistently verify precision
+    // and i128 and i256 arithmetic doesn't get vectorised by LLVM regardless
     let array: PrimitiveArray<T> = match op {
         Op::Add | Op::AddWrapping | Op::Sub | Op::SubWrapping => {
             // max(s1, s2)
-            let result_scale = *s1.max(s2);
+            let rs = s1.max(s2);
 
             // max(s1, s2) + max(p1-s1, p2-s2) + 1
-            let result_precision =
-                (result_scale.saturating_add((*p1 as i8 - s1).max(*p2 as i8 - s2)) as u8)
-                    .saturating_add(1)
-                    .min(T::MAX_PRECISION);
-
-            let l_mul = T::Native::usize_as(10).pow_checked((result_scale - s1) as _)?;
-            let r_mul = T::Native::usize_as(10).pow_checked((result_scale - s2) as _)?;
+            let rp = rs + (p1 - s1).max(p2 - s2) + 1;
 
             match op {
                 Op::Add | Op::AddWrapping => {
-                    try_op!(
-                        l,
-                        l_s,
-                        r,
-                        r_s,
-                        l.mul_checked(l_mul)?.add_checked(r.mul_checked(r_mul)?)
-                    )
+                    decimal_op!(l, l_s, r, r_s, rp, rs, l.add_checked(r))
                 }
                 Op::Sub | Op::SubWrapping => {
-                    try_op!(
-                        l,
-                        l_s,
-                        r,
-                        r_s,
-                        l.mul_checked(l_mul)?.sub_checked(r.mul_checked(r_mul)?)
-                    )
+                    decimal_op!(l, l_s, r, r_s, rp, rs, l.sub_checked(r))
                 }
                 _ => unreachable!(),
             }
-            .with_precision_and_scale(result_precision, result_scale)?
         }
         Op::Mul | Op::MulWrapping => {
-            let result_precision = p1.saturating_add(p2 + 1).min(T::MAX_PRECISION);
-            let result_scale = s1.saturating_add(*s2);
-            if result_scale > T::MAX_SCALE {
-                // SQL standard says that if the resulting scale of a multiply operation goes
-                // beyond the maximum, rounding is not acceptable and thus an error occurs
-                return Err(ArrowError::InvalidArgumentError(format!(
-                    "Output scale of {} {op} {} would exceed max scale of {}",
-                    l.data_type(),
-                    r.data_type(),
-                    T::MAX_SCALE
-                )));
-            }
-
-            try_op!(l, l_s, r, r_s, l.mul_checked(r))
-                .with_precision_and_scale(result_precision, result_scale)?
+            let rp = p1 + p2 + 1;
+            let rs = s1 + s2;
+            // TODO: Should we error if scale is too large??
+            decimal_op!(l, l_s, r, r_s, rp, rs, l.mul_checked(r))
         }
 
         Op::Div => {
             // max(6, s1 + p2 + 1)
-            let result_scale = 6.max(s1 + *p2 as i8 + 1).min(T::MAX_SCALE);
-            let mul_pow = result_scale - s1 + s2;
+            let rs = 6.max(s1 + p2 + 1);
+            let mul_pow = rs - s1 + s2;
 
             // p1 - s1 + s2 + result_scale
-            let result_precision =
-                (mul_pow.saturating_add(*p1 as i8) as u8).min(T::MAX_PRECISION);
+            let rp = mul_pow + p1;
 
-            let (l_mul, r_mul) = match mul_pow.cmp(&0) {
-                Ordering::Greater => (
-                    T::Native::usize_as(10).pow_checked(mul_pow as _)?,
-                    T::Native::ONE,
-                ),
-                Ordering::Equal => (T::Native::ONE, T::Native::ONE),
-                Ordering::Less => (
-                    T::Native::ONE,
-                    T::Native::usize_as(10).pow_checked(mul_pow.neg_wrapping() as _)?,
-                ),
-            };
-
-            try_op!(
-                l,
-                l_s,
-                r,
-                r_s,
-                l.mul_checked(l_mul)?.div_checked(r.mul_checked(r_mul)?)
-            )
-            .with_precision_and_scale(result_precision, result_scale)?
+            decimal_op!(l, l_s, r, r_s, rp, rs, l.div_checked(r))
         }
 
         Op::Rem => {
             // max(s1, s2)
-            let result_scale = *s1.max(s2);
+            let rs = s1.max(s2);
             // min(p1-s1, p2 -s2) + max( s1,s2 )
-            let result_precision =
-                (result_scale.saturating_add((*p1 as i8 - s1).min(*p2 as i8 - s2)) as u8)
-                    .min(T::MAX_PRECISION);
+            let rp = rs + (p1 - s1) + (p2 - s2);
 
-            let l_mul = T::Native::usize_as(10).pow_wrapping((result_scale - s1) as _);
-            let r_mul = T::Native::usize_as(10).pow_wrapping((result_scale - s2) as _);
-
-            try_op!(
-                l,
-                l_s,
-                r,
-                r_s,
-                l.mul_checked(l_mul)?.mod_checked(r.mul_checked(r_mul)?)
-            )
-            .with_precision_and_scale(result_precision, result_scale)?
+            decimal_op!(l, l_s, r, r_s, rp, rs, l.mod_checked(r))
         }
     };
 
