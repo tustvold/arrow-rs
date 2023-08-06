@@ -798,6 +798,60 @@ impl ToDigits for i256 {
     }
 }
 
+trait WideArithmetic: Sized {
+    fn widening_mul(a: Self, b: Self) -> (Self, Self);
+
+    fn add_wide(a: (Self, Self), b: (Self, Self)) -> Result<(Self, Self), ArrowError>;
+
+    fn sub_wide(a: (Self, Self), b: (Self, Self)) -> Result<(Self, Self), ArrowError>;
+
+    fn narrowing_div_rem(
+        a: (Self, Self),
+        div: (Self, Self),
+    ) -> Result<(Self, Self), ArrowError>;
+}
+impl WideArithmetic for i128 {
+    fn widening_mul(a: Self, b: Self) -> (Self, Self) {
+        todo!()
+    }
+
+    fn add_wide(a: (Self, Self), b: (Self, Self)) -> Result<(Self, Self), ArrowError> {
+        todo!()
+    }
+
+    fn sub_wide(a: (Self, Self), b: (Self, Self)) -> Result<(Self, Self), ArrowError> {
+        todo!()
+    }
+
+    fn narrowing_div_rem(
+        a: (Self, Self),
+        div: (Self, Self),
+    ) -> Result<(Self, Self), ArrowError> {
+        todo!()
+    }
+}
+
+impl WideArithmetic for i256 {
+    fn widening_mul(a: Self, b: Self) -> (Self, Self) {
+        todo!()
+    }
+
+    fn add_wide(a: (Self, Self), b: (Self, Self)) -> Result<(Self, Self), ArrowError> {
+        todo!()
+    }
+
+    fn sub_wide(a: (Self, Self), b: (Self, Self)) -> Result<(Self, Self), ArrowError> {
+        todo!()
+    }
+
+    fn narrowing_div_rem(
+        a: (Self, Self),
+        div: (Self, Self),
+    ) -> Result<(Self, Self), ArrowError> {
+        todo!()
+    }
+}
+
 /// Perform arithmetic operation on decimal arrays
 fn decimal_op<T: DecimalType>(
     op: Op,
@@ -807,7 +861,7 @@ fn decimal_op<T: DecimalType>(
     r_s: bool,
 ) -> Result<ArrayRef, ArrowError>
 where
-    T::Native: ToDigits,
+    T::Native: WideArithmetic,
 {
     let l = l.as_primitive::<T>();
     let r = r.as_primitive::<T>();
@@ -835,10 +889,10 @@ where
             let rp = rs + (p1 - s1).max(p2 - s2) + 1;
             let (p, s) = adjust_scale::<T>(rp, rs);
 
-            if s == rs {
-                let l_mul = T::Native::usize_as(10).pow_checked((rs - s1) as _)?;
-                let r_mul = T::Native::usize_as(10).pow_checked((rs - s2) as _)?;
+            let l_mul = T::Native::usize_as(10).pow_checked((rs - s1) as _)?;
+            let r_mul = T::Native::usize_as(10).pow_checked((rs - s2) as _)?;
 
+            if s == rs {
                 match op {
                     Op::Add | Op::AddWrapping => {
                         try_op!(
@@ -861,7 +915,30 @@ where
                     _ => unreachable!(),
                 }
             } else {
-                todo!()
+                let div = T::Native::usize_as(10).pow_checked((rs - s) as _)?;
+                match op {
+                    Op::Add | Op::AddWrapping => {
+                        try_op!(l, l_s, r, r_s, {
+                            let (l_lo, l_hi) = T::Native::widening_mul(l, l_mul);
+                            let (r_lo, r_hi) = T::Native::widening_mul(r, r_mul);
+                            let (lo, hi) =
+                                T::Native::add_wide((l_lo, l_hi), (r_lo, r_hi))?;
+                            T::Native::narrowing_div_rem((lo, hi), (T::Native::ZERO, div))
+                                .map(|x| x.0)
+                        })
+                    }
+                    Op::Sub | Op::SubWrapping => {
+                        try_op!(l, l_s, r, r_s, {
+                            let (l_lo, l_hi) = T::Native::widening_mul(l, l_mul);
+                            let (r_lo, r_hi) = T::Native::widening_mul(r, r_mul);
+                            let (lo, hi) =
+                                T::Native::sub_wide((l_lo, l_hi), (r_lo, r_hi))?;
+                            T::Native::narrowing_div_rem((lo, hi), (T::Native::ZERO, div))
+                                .map(|x| x.0)
+                        })
+                    }
+                    _ => unreachable!(),
+                }
             }
             .with_precision_and_scale(p, s as _)?
         }
@@ -872,7 +949,12 @@ where
             if s == rs {
                 try_op!(l, l_s, r, r_s, l.mul_checked(r))
             } else {
-                todo!()
+                let div = T::Native::usize_as(10).pow_checked((rs - s) as _)?;
+                try_op!(l, l_s, r, r_s, {
+                    let (lo, hi) = T::Native::widening_mul(l, r);
+                    T::Native::narrowing_div_rem((lo, hi), (T::Native::ZERO, div))
+                        .map(|x| x.0)
+                })
             }
             .with_precision_and_scale(p, s as _)?
         }
@@ -888,29 +970,21 @@ where
             let mul_pow = s - s1 + s2;
 
             let (l_mul, r_mul) = match mul_pow.cmp(&0) {
-                Ordering::Greater => (Some(BigInt::from(10).pow(mul_pow as _)), None),
-                Ordering::Equal => (None, None),
-                Ordering::Less => (None, Some(BigInt::from(10).pow(mul_pow as _))),
+                Ordering::Greater => (
+                    T::Native::usize_as(10).pow_checked(mul_pow as _)?,
+                    T::Native::ONE,
+                ),
+                Ordering::Equal => (T::Native::ONE, T::Native::ONE),
+                Ordering::Less => (
+                    T::Native::ONE,
+                    T::Native::usize_as(10).pow_checked(mul_pow as _)?,
+                ),
             };
 
-            let mut bl = BigInt::default();
-            let mut br = BigInt::default();
-
             try_op!(l, l_s, r, r_s, {
-                let (s, d) = l.to_digits();
-                bl.assign_from_slice(s, d.as_ref());
-                let (s, d) = r.to_digits();
-                br.assign_from_slice(s, d.as_ref());
-                println!("{l:?} {bl:?} {r:?} {br:?}");
-                if let Some(l_mul) = &l_mul {
-                    bl *= l_mul
-                }
-                if let Some(r_mul) = &r_mul {
-                    br *= r_mul
-                }
-                bl /= &br;
-                println!("{l:?} * {l_mul:?} / {r:?} * {r_mul:?}= {bl}");
-                T::Native::from_bigint(&bl)
+                let (l_lo, l_hi) = T::Native::widening_mul(l_mul, l);
+                let (r_lo, r_hi) = T::Native::widening_mul(r_mul, r);
+                T::Native::narrowing_div_rem((l_lo, l_hi), (r_lo, r_hi)).map(|x| x.0)
             })
             .with_precision_and_scale(p, s as _)?
         }
@@ -925,17 +999,11 @@ where
             let r_mul = T::Native::usize_as(10).pow_wrapping((rs - s2) as _);
 
             let (p, s) = adjust_scale::<T>(rp, rs);
-            if s == rs {
-                try_op!(
-                    l,
-                    l_s,
-                    r,
-                    r_s,
-                    l.mul_checked(l_mul)?.mod_checked(r.mul_checked(r_mul)?)
-                )
-            } else {
-                todo!()
-            }
+            try_op!(l, l_s, r, r_s, {
+                let (l_lo, l_hi) = T::Native::widening_mul(l_mul, l);
+                let (r_lo, r_hi) = T::Native::widening_mul(r_mul, r);
+                T::Native::narrowing_div_rem((l_lo, l_hi), (r_lo, r_hi)).map(|x| x.1)
+            })
             .with_precision_and_scale(p, s as _)?
         }
     };
