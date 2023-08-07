@@ -22,6 +22,8 @@ use std::num::ParseIntError;
 use std::ops::{BitAnd, BitOr, BitXor, Neg, Shl, Shr};
 use std::str::FromStr;
 
+mod div;
+
 /// An opaque error similar to [`std::num::ParseIntError`]
 #[derive(Debug)]
 pub struct ParseI256Error {}
