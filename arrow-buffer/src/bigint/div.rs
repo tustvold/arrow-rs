@@ -192,17 +192,14 @@ fn shl_word<const N: usize>(v: &[u64; N], shift: u32) -> [u64; N] {
 
 fn full_shl<const N: usize>(v: &[u64; N], shift: u32) -> ArrayPlusOne<u64, N> {
     debug_assert!(shift < 64);
-    // out[i] =  v[i - 1] >> (64 - shift) | v[i] << shift
     if shift == 0 {
         return ArrayPlusOne(*v, 0);
     }
     let mut out = [0u64; N];
-
-    out.iter_mut().zip(v).for_each(|(o, a)| *o = *a << shift);
-    out.iter_mut()
-        .skip(1)
-        .zip(v)
-        .for_each(|(o, a)| *o |= *a >> (64 - shift));
+    out[0] = v[0] << shift;
+    for i in 1..N {
+        out[i] = v[i - 1] >> (64 - shift) | v[i] << shift
+    }
     let carry = v[N - 1] >> (64 - shift);
     return ArrayPlusOne(out, carry);
 }
@@ -212,14 +209,12 @@ fn full_shr<const N: usize>(a: &ArrayPlusOne<u64, N>, shift: u32) -> [u64; N] {
     if shift == 0 {
         return a.0;
     }
-    let mut res = [0; N];
-    res.iter_mut()
-        .zip(a.iter())
-        .for_each(|(o, a)| *o = *a >> shift);
-    res.iter_mut()
-        .zip(a.iter().skip(1))
-        .for_each(|(o, a)| *o |= *a << (64 - shift));
-    res
+    let mut out = [0; N];
+    for i in 0..N - 1 {
+        out[i] = a[i] >> shift | a[i + 1] << (64 - shift)
+    }
+    out[N - 1] = a[N - 1] >> shift;
+    out
 }
 
 /// An array of N + 1 elements
