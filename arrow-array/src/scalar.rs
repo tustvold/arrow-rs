@@ -92,12 +92,6 @@ impl Datum for dyn Array {
     }
 }
 
-impl Datum for &dyn Array {
-    fn get(&self) -> (&dyn Array, bool) {
-        (*self, false)
-    }
-}
-
 /// A wrapper around a single value [`Array`] indicating kernels should treat it as a scalar value
 ///
 /// See [`Datum`] for more information
@@ -119,5 +113,22 @@ impl<T: Array> Scalar<T> {
 impl<T: Array> Datum for Scalar<T> {
     fn get(&self) -> (&dyn Array, bool) {
         (&self.0, true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ArrayRef, Int32Array};
+    use std::sync::Arc;
+
+    #[test]
+    fn test() {
+        let a: ArrayRef = Arc::new(Int32Array::new_null(1));
+        Scalar::new(a.as_ref());
+        Scalar::new(a.clone());
+
+        let a: &dyn Array = a.as_ref();
+        Scalar::new(a);
     }
 }
