@@ -22,3 +22,5 @@ pub mod length;
 pub mod like;
 pub mod regexp;
 pub mod substring;
+
+mod predicate;
