@@ -17,7 +17,7 @@
 
 use crate::dictionary::{merge_dictionary_values, should_merge_dictionary_values};
 use arrow_array::builder::{BooleanBufferBuilder, BufferBuilder, PrimitiveBuilder};
-use arrow_array::cast::as_dictionary_array;
+use arrow_array::cast::{as_dictionary_array, AsArray};
 use arrow_array::types::*;
 use arrow_array::*;
 use arrow_buffer::{
@@ -191,15 +191,15 @@ fn interleave_dictionaries<K: ArrowDictionaryKeyType>(
     arrays: &[&dyn Array],
     indices: &[(usize, usize)],
 ) -> Result<ArrayRef, ArrowError> {
-    if !should_merge_dictionary_values::<K>(arrays, indices.len()) {
+    let dictionaries: Vec<_> = arrays.iter().map(|x| x.as_dictionary::<K>()).collect();
+    if !should_merge_dictionary_values::<K>(&dictionaries, indices.len()) {
         return interleave_fallback(arrays, indices);
     }
 
-    let dictionaries: Vec<_> = arrays
+    let masks: Vec<_> = dictionaries
         .iter()
         .enumerate()
-        .map(|(a_idx, a)| {
-            let dictionary = as_dictionary_array::<K>(*a);
+        .map(|(a_idx, dictionary)| {
             let mut key_mask = BooleanBufferBuilder::new_from_buffer(
                 MutableBuffer::new_null(dictionary.len()),
                 dictionary.len(),
@@ -208,16 +208,16 @@ fn interleave_dictionaries<K: ArrowDictionaryKeyType>(
             for (_, key_idx) in indices.iter().filter(|(a, _)| *a == a_idx) {
                 key_mask.set_bit(*key_idx, true);
             }
-            (dictionary, Some(key_mask.finish()))
+            key_mask.finish()
         })
         .collect();
 
-    let merged = merge_dictionary_values(&dictionaries)?;
+    let merged = merge_dictionary_values(&dictionaries, Some(&masks))?;
 
     // Recompute keys
     let mut keys = PrimitiveBuilder::<K>::with_capacity(indices.len());
     for (a, b) in indices {
-        let old_keys: &PrimitiveArray<K> = dictionaries[*a].0.keys();
+        let old_keys: &PrimitiveArray<K> = dictionaries[*a].keys();
         match old_keys.is_valid(*b) {
             true => {
                 let old_key = old_keys.values()[*b];
