@@ -25,6 +25,8 @@ use arrow::csv;
 use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
 use arrow::util::bench_util::{create_primitive_array, create_string_array_with_len};
+use arrow::util::test_util::seedable_rng;
+use rand::Rng;
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -55,6 +57,12 @@ fn do_bench(c: &mut Criterion, name: &str, cols: Vec<ArrayRef>) {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
+    let mut rng = seedable_rng();
+
+    let values = Int32Array::from_iter_values((0..4096).map(|_| rng.gen_range(0..1000)));
+    let cols = vec![Arc::new(values) as ArrayRef];
+    do_bench(c, "4096 i32(0)", cols);
+
     let cols = vec![Arc::new(create_primitive_array::<UInt64Type>(4096, 0.)) as ArrayRef];
     do_bench(c, "4096 u64(0)", cols);
 
