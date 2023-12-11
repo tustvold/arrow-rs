@@ -62,18 +62,28 @@ pub struct GenericRecordReader<V, CV> {
 
 impl<V, CV> GenericRecordReader<V, CV>
 where
-    V: ValuesBuffer,
+    V: ValuesBuffer + Default,
     CV: ColumnValueDecoder<Buffer = V>,
 {
     /// Create a new [`GenericRecordReader`]
     pub fn new(desc: ColumnDescPtr) -> Self {
+        Self::new_with_values(desc, V::default())
+    }
+}
+
+impl<V, CV> GenericRecordReader<V, CV>
+where
+    V: ValuesBuffer,
+    CV: ColumnValueDecoder<Buffer = V>,
+{
+    pub fn new_with_values(desc: ColumnDescPtr, values: V) -> Self {
         let def_levels = (desc.max_def_level() > 0)
             .then(|| DefinitionLevelBuffer::new(&desc, packed_null_mask(&desc)));
 
         let rep_levels = (desc.max_rep_level() > 0).then(Vec::new);
 
         Self {
-            values: V::default(),
+            values,
             def_levels,
             rep_levels,
             column_reader: None,
@@ -169,7 +179,7 @@ where
     /// Returns currently stored buffer data.
     /// The side effect is similar to `consume_def_levels`.
     pub fn consume_record_data(&mut self) -> V {
-        std::mem::take(&mut self.values)
+        self.values.take()
     }
 
     /// Returns currently stored null bitmap data.
@@ -195,6 +205,9 @@ where
 
     /// Try to read one batch of data returning the number of records read
     fn read_one_batch(&mut self, batch_size: usize) -> Result<usize> {
+        // Reserve additional space in values for null padding
+        self.values.reserve(batch_size);
+
         let (records_read, values_read, levels_read) =
             self.column_reader.as_mut().unwrap().read_records(
                 batch_size,

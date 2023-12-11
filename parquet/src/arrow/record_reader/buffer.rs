@@ -18,7 +18,10 @@
 use crate::arrow::buffer::bit_util::iter_set_bits_rev;
 
 /// A buffer that supports padding with nulls
-pub trait ValuesBuffer: Default {
+pub trait ValuesBuffer {
+    /// Reserve space for `additional` values
+    fn reserve(&mut self, additional: usize);
+
     /// If a column contains nulls, more level data may be read than value data, as null
     /// values are not encoded. Therefore, first the levels data is read, the null count
     /// determined, and then the corresponding number of values read to a [`ValuesBuffer`].
@@ -40,9 +43,16 @@ pub trait ValuesBuffer: Default {
         levels_read: usize,
         valid_mask: &[u8],
     );
+
+    /// Take the contents of this buffer
+    fn take(&mut self) -> Self;
 }
 
 impl<T: Copy + Default> ValuesBuffer for Vec<T> {
+    fn reserve(&mut self, additional: usize) {
+        self.reserve(additional)
+    }
+
     fn pad_nulls(
         &mut self,
         read_offset: usize,
@@ -60,5 +70,9 @@ impl<T: Copy + Default> ValuesBuffer for Vec<T> {
             }
             self[level_pos] = self[value_pos];
         }
+    }
+
+    fn take(&mut self) -> Self {
+        std::mem::take(self)
     }
 }

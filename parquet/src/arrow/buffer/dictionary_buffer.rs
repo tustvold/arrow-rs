@@ -185,6 +185,13 @@ impl<K: ArrowNativeType + Ord, V: OffsetSizeTrait> DictionaryBuffer<K, V> {
 }
 
 impl<K: ArrowNativeType, V: OffsetSizeTrait> ValuesBuffer for DictionaryBuffer<K, V> {
+    fn reserve(&mut self, additional: usize) {
+        match self {
+            Self::Dict { keys, .. } => keys.reserve(additional),
+            Self::Values { values, .. } => values.reserve(additional),
+        }
+    }
+
     fn pad_nulls(
         &mut self,
         read_offset: usize,
@@ -201,6 +208,10 @@ impl<K: ArrowNativeType, V: OffsetSizeTrait> ValuesBuffer for DictionaryBuffer<K
                 values.pad_nulls(read_offset, values_read, levels_read, valid_mask)
             }
         }
+    }
+
+    fn take(&mut self) -> Self {
+        std::mem::take(self)
     }
 }
 

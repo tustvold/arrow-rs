@@ -128,13 +128,14 @@ impl FixedLenByteArrayReader {
         data_type: ArrowType,
         byte_length: usize,
     ) -> Self {
+        let values = FixedLenByteArrayBuffer::new(byte_length);
         Self {
             data_type,
             byte_length,
             pages,
             def_levels_buffer: None,
             rep_levels_buffer: None,
-            record_reader: GenericRecordReader::new(column_desc),
+            record_reader: GenericRecordReader::new_with_values(column_desc, values),
         }
     }
 }
@@ -232,14 +233,26 @@ impl ArrayReader for FixedLenByteArrayReader {
     }
 }
 
-#[derive(Default)]
 struct FixedLenByteArrayBuffer {
     buffer: Vec<u8>,
     /// The length of each element in bytes
-    byte_length: Option<usize>,
+    byte_length: usize,
+}
+
+impl FixedLenByteArrayBuffer {
+    fn new(byte_length: usize) -> Self {
+        Self {
+            byte_length,
+            buffer: Default::default(),
+        }
+    }
 }
 
 impl ValuesBuffer for FixedLenByteArrayBuffer {
+    fn reserve(&mut self, additional: usize) {
+        self.buffer.reserve(additional * self.byte_length);
+    }
+
     fn pad_nulls(
         &mut self,
         read_offset: usize,
@@ -247,8 +260,7 @@ impl ValuesBuffer for FixedLenByteArrayBuffer {
         levels_read: usize,
         valid_mask: &[u8],
     ) {
-        let byte_length = self.byte_length.unwrap_or_default();
-
+        let byte_length = self.byte_length;
         assert_eq!(self.buffer.len(), (read_offset + values_read) * byte_length);
         self.buffer
             .resize((read_offset + levels_read) * byte_length, 0);
@@ -266,6 +278,13 @@ impl ValuesBuffer for FixedLenByteArrayBuffer {
             for i in 0..byte_length {
                 self.buffer[level_pos_bytes + i] = self.buffer[value_pos_bytes + i]
             }
+        }
+    }
+
+    fn take(&mut self) -> Self {
+        Self {
+            buffer: std::mem::take(&mut self.buffer),
+            byte_length: self.byte_length,
         }
     }
 }
@@ -345,11 +364,6 @@ impl ColumnValueDecoder for ValueDecoder {
     }
 
     fn read(&mut self, out: &mut Self::Buffer, num_values: usize) -> Result<usize> {
-        match out.byte_length {
-            Some(x) => assert_eq!(x, self.byte_length),
-            None => out.byte_length = Some(self.byte_length),
-        }
-
         match self.decoder.as_mut().unwrap() {
             Decoder::Plain { offset, buf } => {
                 let to_read =

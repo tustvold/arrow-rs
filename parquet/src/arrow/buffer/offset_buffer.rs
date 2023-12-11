@@ -141,6 +141,10 @@ impl<I: OffsetSizeTrait> OffsetBuffer<I> {
 }
 
 impl<I: OffsetSizeTrait> ValuesBuffer for OffsetBuffer<I> {
+    fn reserve(&mut self, additional: usize) {
+        self.offsets.reserve(additional)
+    }
+
     fn pad_nulls(
         &mut self,
         read_offset: usize,
@@ -187,6 +191,10 @@ impl<I: OffsetSizeTrait> ValuesBuffer for OffsetBuffer<I> {
         for x in &mut offsets[values_range.start + 1..last_pos] {
             *x = last_start_offset
         }
+    }
+
+    fn take(&mut self) -> Self {
+        std::mem::take(self)
     }
 }
 
