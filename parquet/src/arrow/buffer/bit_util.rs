@@ -25,8 +25,7 @@ pub fn count_set_bits(bytes: &[u8], range: Range<usize>) -> usize {
 }
 
 /// Iterates through the set bit positions in `bytes` in reverse order
-pub fn iter_set_bits_rev(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
-    let bit_length = bytes.len() * 8;
+pub fn iter_set_bits_rev(bytes: &[u8], bit_length: usize) -> impl Iterator<Item = usize> + '_ {
     let unaligned = UnalignedBitChunk::new(bytes, 0, bit_length);
     let mut chunk_end_idx = bit_length + unaligned.lead_padding() + unaligned.trailing_padding();
 
@@ -78,7 +77,7 @@ mod tests {
         let mut nulls = BooleanBufferBuilder::new(mask_length);
         bools.iter().for_each(|b| nulls.append(*b));
 
-        let actual: Vec<_> = iter_set_bits_rev(nulls.as_slice()).collect();
+        let actual: Vec<_> = iter_set_bits_rev(nulls.as_slice(), mask_length).collect();
         let expected: Vec<_> = bools
             .iter()
             .enumerate()
@@ -87,7 +86,7 @@ mod tests {
             .collect();
         assert_eq!(actual, expected);
 
-        assert_eq!(iter_set_bits_rev(&[]).count(), 0);
+        assert_eq!(iter_set_bits_rev(&[], 0).count(), 0);
         assert_eq!(count_set_bits(&[], 0..0), 0);
         assert_eq!(count_set_bits(&[0xFF], 1..1), 0);
 

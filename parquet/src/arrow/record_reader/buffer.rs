@@ -50,14 +50,19 @@ impl<T: Copy + Default> ValuesBuffer for Vec<T> {
         levels_read: usize,
         valid_mask: &[u8],
     ) {
+        assert!(values_read <= levels_read);
         self.resize(read_offset + levels_read, T::default());
 
         let values_range = read_offset..read_offset + values_read;
-        for (value_pos, level_pos) in values_range.rev().zip(iter_set_bits_rev(valid_mask)) {
+        for (value_pos, level_pos) in values_range
+            .rev()
+            .zip(iter_set_bits_rev(valid_mask, read_offset + levels_read))
+        {
             debug_assert!(level_pos >= value_pos);
             if level_pos <= value_pos {
                 break;
             }
+            // Safety: indices must be in bounds by construction
             unsafe { *self.get_unchecked_mut(level_pos) = *self.get_unchecked(value_pos) }
         }
     }

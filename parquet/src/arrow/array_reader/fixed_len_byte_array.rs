@@ -254,7 +254,10 @@ impl ValuesBuffer for FixedLenByteArrayBuffer {
             .resize((read_offset + levels_read) * byte_length, 0);
 
         let values_range = read_offset..read_offset + values_read;
-        for (value_pos, level_pos) in values_range.rev().zip(iter_set_bits_rev(valid_mask)) {
+        for (value_pos, level_pos) in values_range
+            .rev()
+            .zip(iter_set_bits_rev(valid_mask, read_offset + levels_read))
+        {
             debug_assert!(level_pos >= value_pos);
             if level_pos <= value_pos {
                 break;

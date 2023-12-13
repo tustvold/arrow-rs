@@ -161,7 +161,7 @@ impl<I: OffsetSizeTrait> ValuesBuffer for OffsetBuffer<I> {
         for (value_pos, level_pos) in values_range
             .clone()
             .rev()
-            .zip(iter_set_bits_rev(valid_mask))
+            .zip(iter_set_bits_rev(valid_mask, read_offset + levels_read))
         {
             assert!(level_pos >= value_pos);
             assert!(level_pos < last_pos);
