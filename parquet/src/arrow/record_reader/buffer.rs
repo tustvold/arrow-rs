@@ -58,7 +58,7 @@ impl<T: Copy + Default> ValuesBuffer for Vec<T> {
             if level_pos <= value_pos {
                 break;
             }
-            unsafe { self.get_unchecked_mut(level_pos) = *self.get_unchecked(value_pos) }
+            unsafe { *self.get_unchecked_mut(level_pos) = *self.get_unchecked(value_pos) }
         }
     }
 }
