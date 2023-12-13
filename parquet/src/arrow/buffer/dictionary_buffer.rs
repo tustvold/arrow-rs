@@ -193,13 +193,8 @@ impl<K: ArrowNativeType, V: OffsetSizeTrait> ValuesBuffer for DictionaryBuffer<K
         valid_mask: &[u8],
     ) {
         match self {
-            Self::Dict { keys, .. } => {
-                keys.resize(read_offset + levels_read, K::default());
-                keys.pad_nulls(read_offset, values_read, levels_read, valid_mask)
-            }
-            Self::Values { values, .. } => {
-                values.pad_nulls(read_offset, values_read, levels_read, valid_mask)
-            }
+            Self::Dict { keys, .. } => keys.pad_nulls(read_offset, values_read, levels_read, valid_mask),
+            Self::Values { values, .. } => values.pad_nulls(read_offset, values_read, levels_read, valid_mask),
         }
     }
 }
