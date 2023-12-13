@@ -92,6 +92,7 @@ impl<I: OffsetSizeTrait> OffsetBuffer<I> {
         dict_offsets: &[V],
         dict_values: &[u8],
     ) -> Result<()> {
+        let mut to_reserve = 0;
         for key in keys {
             let index = key.as_usize();
             if index + 1 >= dict_offsets.len() {
@@ -100,9 +101,18 @@ impl<I: OffsetSizeTrait> OffsetBuffer<I> {
                     dict_offsets.len().saturating_sub(1)
                 ));
             }
-            let start_offset = dict_offsets[index].as_usize();
             let end_offset = dict_offsets[index + 1].as_usize();
+            let start_offset = dict_offsets[index].as_usize();
 
+            to_reserve += end_offset - start_offset;
+        }
+
+        self.offsets.reserve(keys.len());
+        self.values.reserve(to_reserve);
+        for key in keys {
+            let index = key.as_usize();
+            let end_offset = dict_offsets[index + 1].as_usize();
+            let start_offset = dict_offsets[index].as_usize();
             // Dictionary values are verified when decoding dictionary page
             self.try_push(&dict_values[start_offset..end_offset], false)?;
         }
