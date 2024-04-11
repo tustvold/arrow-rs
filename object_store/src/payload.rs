@@ -19,6 +19,29 @@ use bytes::Bytes;
 use std::sync::Arc;
 
 /// A cheaply cloneable, ordered collection of [`Bytes`]
+///
+/// `PutPayload` is used to represent the body of a PUT request without having
+/// to allocate a single contiguous buffer, reducing the amount of memory
+/// copying required. Internally represented as an array of `Bytes` which are
+/// themselves reference counted and cheap to create and append.
+///
+/// See [`PutPayloadMut`] to for create `PutPayloads` incrementally
+///
+/// # Examples: Creation
+/// ```
+/// # use bytes::Bytes;
+/// # use object_store::PutPayload;
+/// // create a payload from a static string
+/// let payload = PutPayload::from("some data");
+///
+/// // create a payload from a Vec of bytes (no copy)
+/// let data: Vec<u8> = vec![1, 2, 3];
+/// let payload = PutPayload::from(data);
+///
+/// // create a payload from Bytes
+/// let data = Bytes::from([1,2,3,]);
+/// let payload = PutPayload::from(data);
+/// ```
 #[derive(Debug, Clone)]
 pub struct PutPayload(Arc<[Bytes]>);
 
@@ -184,6 +207,23 @@ impl From<PutPayload> for Bytes {
 }
 
 /// A builder for [`PutPayload`] that allocates memory in chunks
+///
+/// # Examples:
+/// ```
+/// # use object_store::{PutPayloadMut, PutPayload};
+/// // create a payload from two Vecs of bytes (no copy)
+/// let mut builder = PutPayloadMut::new();
+/// builder.push(vec![1, 2, 3].into());
+/// builder.push(vec![4, 5, 6].into());
+/// let payload: PutPayload = builder.freeze();
+///
+/// // create a payload copying from slices (copy)
+/// let mut builder = PutPayloadMut::new();
+/// let data = [1, 2, 3, 4, 5, 6];
+/// builder.extend_from_slice(&data[0..2]);
+/// builder.extend_from_slice(&data[2..]);
+/// let payload: PutPayload = builder.freeze();
+/// ```
 #[derive(Debug)]
 pub struct PutPayloadMut {
     len: usize,
