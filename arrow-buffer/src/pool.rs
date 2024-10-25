@@ -8,7 +8,7 @@ pub trait MemoryPool {
 }
 
 /// A memory reservation within a [`MemoryPool`] that is freed on drop
-pub trait MemoryReservation {
+pub trait MemoryReservation: std::fmt::Debug {
     /// Resize this reservation to `new` bytes
     fn resize(&mut self, new: usize);
 }

@@ -73,6 +73,25 @@ impl Bytes {
         }
     }
 
+    /// Takes ownership of an allocated memory region with a reservation.
+    ///
+    /// Similiar to [`Bytes::new`], but also takes a reservation that is used to track the memory usage.
+    #[cfg(feature = "pool")]
+    #[inline]
+    pub(crate) unsafe fn new_with_reservation(
+        ptr: NonNull<u8>,
+        len: usize,
+        deallocation: Deallocation,
+        reservation: Option<Box<dyn crate::MemoryReservation>>,
+    ) -> Bytes {
+        Bytes {
+            ptr,
+            len,
+            deallocation,
+            reservation: std::sync::Mutex::new(reservation),
+        }
+    }
+
     fn as_slice(&self) -> &[u8] {
         self
     }
